@@ -1,0 +1,385 @@
+{
+  "name": "B - URL Intake → Brand Research → Brief → Approval",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            { "mode": "everyMinute", "minute": 5 }
+          ]
+        },
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_ACCOUNTS }}"
+        },
+        "triggerField": "Last Modified",
+        "additionalFields": {
+          "formula": "AND({Status} = 'Prospect', {Website URL} != '')"
+        }
+      },
+      "id": "airtable-trigger",
+      "name": "Trigger: New Prospect Account",
+      "type": "n8n-nodes-base.airtableTrigger",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const input = $input.first().json;\nconst accountId = input.id || input.record_id || '';\nconst websiteUrl = input.fields?.['Website URL'] || input['Website URL'] || '';\nconst accountName = input.fields?.['Account Name'] || input['Account Name'] || '';\n\nconst crypto = require('crypto');\nconst idempotencyKey = crypto\n  .createHash('sha256')\n  .update(`url_intake:${accountId}:${websiteUrl}`)\n  .digest('hex');\n\nreturn [{\n  json: {\n    accountId,\n    accountName,\n    websiteUrl,\n    idempotencyKey\n  }\n}];"
+      },
+      "id": "prepare-intake",
+      "name": "Prepare Intake + Idempotency Key",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_KNOWLEDGE }}"
+        },
+        "filterByFormula": "=FIND('{{ $json.accountName }}', {Title}) > 0"
+      },
+      "id": "check-existing-research",
+      "name": "Check Existing Research",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [650, 300],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.records?.length || 0 }}",
+              "operation": "greaterThan",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "already-researched",
+      "name": "Already Researched?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $node['Prepare Intake + Idempotency Key'].json.websiteUrl }}/robots.txt",
+        "options": {
+          "timeout": 5000,
+          "redirect": { "followRedirects": true, "maxRedirects": 3 }
+        }
+      },
+      "id": "fetch-robots",
+      "name": "Fetch robots.txt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1050, 200],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "functionCode": "const robotsTxt = $input.first().json?.body || $input.first().json?.data || '';\nconst baseUrl = $node['Prepare Intake + Idempotency Key'].json.websiteUrl;\n\n// Simple robots.txt parser — check if our bot is disallowed\nconst disallowedPaths = [];\nconst lines = String(robotsTxt).split('\\n');\nlet relevantSection = false;\nfor (const line of lines) {\n  const trimmed = line.trim().toLowerCase();\n  if (trimmed.startsWith('user-agent:')) {\n    relevantSection = trimmed.includes('*') || trimmed.includes('getfractionalbot');\n  }\n  if (relevantSection && trimmed.startsWith('disallow:')) {\n    const path = trimmed.replace('disallow:', '').trim();\n    if (path) disallowedPaths.push(path);\n  }\n}\n\n// Pages to fetch\nconst pagePaths = ['/', '/products', '/pricing', '/about', '/services'];\nconst allowedPages = pagePaths.filter(p => {\n  return !disallowedPaths.some(d => p.startsWith(d));\n});\n\nreturn [{\n  json: {\n    baseUrl,\n    allowedPages,\n    disallowedPaths,\n    accountName: $node['Prepare Intake + Idempotency Key'].json.accountName,\n    accountId: $node['Prepare Intake + Idempotency Key'].json.accountId\n  }\n}];"
+      },
+      "id": "parse-robots",
+      "name": "Parse robots.txt + Plan Pages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Split allowed pages into individual items for batch fetching\nconst data = $input.first().json;\nreturn data.allowedPages.map(path => ({\n  json: {\n    url: data.baseUrl.replace(/\\/$/, '') + path,\n    pagePath: path,\n    accountName: data.accountName,\n    accountId: data.accountId,\n    baseUrl: data.baseUrl\n  }\n}));"
+      },
+      "id": "split-pages",
+      "name": "Split Pages for Fetch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 200]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "timeout": 10000,
+          "redirect": { "followRedirects": true, "maxRedirects": 3 }
+        },
+        "headerParameters": {
+          "parameter": [
+            {
+              "name": "User-Agent",
+              "value": "GetFractionalBot/1.0 (brand research)"
+            }
+          ]
+        }
+      },
+      "id": "fetch-page",
+      "name": "Fetch Page Content",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1650, 200],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "functionCode": "// Extract text content from HTML (basic extraction)\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const html = item.json?.body || item.json?.data || '';\n  const url = item.json?.url || '';\n  const pagePath = item.json?.pagePath || '';\n  const accountName = item.json?.accountName || '';\n  const accountId = item.json?.accountId || '';\n\n  if (!html || item.json?.error) {\n    // Page fetch failed — skip but log\n    results.push({\n      json: {\n        success: false,\n        url,\n        pagePath,\n        accountName,\n        accountId,\n        error: item.json?.error || 'Empty response'\n      }\n    });\n    continue;\n  }\n\n  // Strip HTML tags for plain text (basic)\n  let text = String(html)\n    .replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, '')\n    .replace(/<style[^>]*>[\\s\\S]*?<\\/style>/gi, '')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .substring(0, 5000); // Cap at 5000 chars per page\n\n  results.push({\n    json: {\n      success: true,\n      url,\n      pagePath,\n      accountName,\n      accountId,\n      textContent: text,\n      title: `${accountName} - ${pagePath === '/' ? 'Homepage' : pagePath.replace('/', '')}`\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "extract-text",
+      "name": "Extract Text Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.success }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "filter-successful",
+      "name": "Filter Successful Pages",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2050, 200]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_KNOWLEDGE }}"
+        },
+        "fields": {
+          "Title": "={{ $json.title }}",
+          "Type": "Link",
+          "Tags": "Brand, Research",
+          "Summary": "={{ $json.textContent.substring(0, 1000) }}",
+          "Source Link": "={{ $json.url }}"
+        }
+      },
+      "id": "create-knowledge-record",
+      "name": "Create Knowledge Library Record",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [2250, 100],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_SYSTEM_LOGS }}"
+        },
+        "fields": {
+          "Severity": "Info",
+          "System": "n8n",
+          "Workflow": "URL Intake Research",
+          "Message": "=Brand research completed for {{ $node['Prepare Intake + Idempotency Key'].json.accountName }}. Knowledge records created.",
+          "Status": "Resolved",
+          "Retry Count": 0
+        }
+      },
+      "id": "log-research-success",
+      "name": "Log Research Success",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [2450, 100],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_SYSTEM_LOGS }}"
+        },
+        "fields": {
+          "Severity": "Warn",
+          "System": "n8n",
+          "Workflow": "URL Intake Research",
+          "Message": "=Some pages failed to fetch for {{ $node['Prepare Intake + Idempotency Key'].json.accountName }}. Manual research may be needed.",
+          "Payload Excerpt": "={{ JSON.stringify({ url: $json.url, error: $json.error }).substring(0, 500) }}",
+          "Status": "New",
+          "Retry Count": 0
+        }
+      },
+      "id": "log-partial-failure",
+      "name": "Log Partial Failure",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [2250, 350],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_SYSTEM_LOGS }}"
+        },
+        "fields": {
+          "Severity": "Info",
+          "System": "n8n",
+          "Workflow": "URL Intake Research",
+          "Message": "=Research already exists for {{ $node['Prepare Intake + Idempotency Key'].json.accountName }}. Skipped.",
+          "Status": "Resolved",
+          "Retry Count": 0
+        }
+      },
+      "id": "log-already-researched",
+      "name": "Log Already Researched",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [1050, 450],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Trigger: New Prospect Account": {
+      "main": [
+        [{ "node": "Prepare Intake + Idempotency Key", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare Intake + Idempotency Key": {
+      "main": [
+        [{ "node": "Check Existing Research", "type": "main", "index": 0 }]
+      ]
+    },
+    "Check Existing Research": {
+      "main": [
+        [{ "node": "Already Researched?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Already Researched?": {
+      "main": [
+        [{ "node": "Log Already Researched", "type": "main", "index": 0 }],
+        [{ "node": "Fetch robots.txt", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch robots.txt": {
+      "main": [
+        [{ "node": "Parse robots.txt + Plan Pages", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse robots.txt + Plan Pages": {
+      "main": [
+        [{ "node": "Split Pages for Fetch", "type": "main", "index": 0 }]
+      ]
+    },
+    "Split Pages for Fetch": {
+      "main": [
+        [{ "node": "Fetch Page Content", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Page Content": {
+      "main": [
+        [{ "node": "Extract Text Content", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extract Text Content": {
+      "main": [
+        [{ "node": "Filter Successful Pages", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter Successful Pages": {
+      "main": [
+        [{ "node": "Create Knowledge Library Record", "type": "main", "index": 0 }],
+        [{ "node": "Log Partial Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create Knowledge Library Record": {
+      "main": [
+        [{ "node": "Log Research Success", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [
+    { "name": "get-fractional" },
+    { "name": "url-intake" },
+    { "name": "brand-research" }
+  ],
+  "pinData": {}
+}

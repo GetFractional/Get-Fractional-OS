@@ -1,0 +1,287 @@
+{
+  "name": "C - Content Publish Prep → Post URL Capture → Metrics",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            { "mode": "everyMinute", "minute": 5 }
+          ]
+        },
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_CONTENT }}"
+        },
+        "triggerField": "Last Modified Time",
+        "additionalFields": {
+          "formula": "{Status} = 'Needs Approval'"
+        }
+      },
+      "id": "trigger-needs-approval",
+      "name": "Trigger: Content Needs Approval",
+      "type": "n8n-nodes-base.airtableTrigger",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const record = $input.first().json;\nconst fields = record.fields || record;\n\nconst toneQA = fields['Tone QA Complete'] || false;\nconst claimsQA = fields['Claims QA Complete'] || false;\nconst privacyQA = fields['Privacy QA Complete'] || false;\nconst postTitle = fields['Post Title'] || 'Untitled';\nconst recordId = record.id || record.record_id || '';\nconst platform = fields['Platform'] || 'Unknown';\nconst pillar = fields['Pillar'] || '';\nconst ctaType = fields['CTA Type'] || '';\nconst draft = fields['Draft'] || '';\n\nconst allQAComplete = toneQA && claimsQA && privacyQA;\n\nconst crypto = require('crypto');\nconst idempotencyKey = crypto\n  .createHash('sha256')\n  .update(`content_publish:${recordId}`)\n  .digest('hex');\n\nreturn [{\n  json: {\n    recordId,\n    postTitle,\n    platform,\n    pillar,\n    ctaType,\n    draftPreview: draft.substring(0, 200),\n    toneQA,\n    claimsQA,\n    privacyQA,\n    allQAComplete,\n    idempotencyKey\n  }\n}];"
+      },
+      "id": "validate-qa",
+      "name": "Validate QA Completion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.allQAComplete }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "qa-complete-check",
+      "name": "All QA Complete?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_CONTENT }}"
+        },
+        "id": "={{ $json.recordId }}",
+        "fields": {
+          "Status": "Needs QA"
+        }
+      },
+      "id": "revert-to-qa",
+      "name": "Revert Status to Needs QA",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [850, 450],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_SYSTEM_LOGS }}"
+        },
+        "fields": {
+          "Severity": "Warn",
+          "System": "n8n",
+          "Workflow": "Content Publish Prep",
+          "Message": "=Approval requested but QA incomplete for: {{ $node['Validate QA Completion'].json.postTitle }}. Missing: {{ !$node['Validate QA Completion'].json.toneQA ? 'Tone QA, ' : '' }}{{ !$node['Validate QA Completion'].json.claimsQA ? 'Claims QA, ' : '' }}{{ !$node['Validate QA Completion'].json.privacyQA ? 'Privacy QA' : '' }}",
+          "Status": "Resolved",
+          "Retry Count": 0
+        }
+      },
+      "id": "log-qa-incomplete",
+      "name": "Log QA Incomplete",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [1050, 450],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_SYSTEM_LOGS }}"
+        },
+        "fields": {
+          "Severity": "Info",
+          "System": "n8n",
+          "Workflow": "Content Publish Prep",
+          "Message": "=Content ready for Matt's approval: {{ $json.postTitle }} ({{ $json.platform }}, {{ $json.pillar }})",
+          "Status": "Resolved",
+          "Retry Count": 0
+        }
+      },
+      "id": "log-ready-for-approval",
+      "name": "Log Ready for Approval",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [850, 200],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            { "mode": "everyMinute", "minute": 10 }
+          ]
+        },
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_CONTENT }}"
+        },
+        "triggerField": "Last Modified Time",
+        "additionalFields": {
+          "formula": "AND({Status} = 'Published', {Post URL} != '')"
+        }
+      },
+      "id": "trigger-post-url-filled",
+      "name": "Trigger: Post URL Filled",
+      "type": "n8n-nodes-base.airtableTrigger",
+      "typeVersion": 1,
+      "position": [250, 600],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const record = $input.first().json;\nconst fields = record.fields || record;\n\nreturn [{\n  json: {\n    recordId: record.id || '',\n    postTitle: fields['Post Title'] || 'Untitled',\n    postUrl: fields['Post URL'] || '',\n    platform: fields['Platform'] || '',\n    publishDate: fields['Publish Date'] || new Date().toISOString().split('T')[0]\n  }\n}];"
+      },
+      "id": "extract-post-info",
+      "name": "Extract Post Info",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 600]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_SYSTEM_LOGS }}"
+        },
+        "fields": {
+          "Severity": "Info",
+          "System": "n8n",
+          "Workflow": "Content Publish Prep",
+          "Message": "=Published: {{ $json.postTitle }} at {{ $json.postUrl }}. Metrics capture task due in 24h.",
+          "Record Link": "={{ $json.postUrl }}",
+          "Status": "Resolved",
+          "Retry Count": 0
+        }
+      },
+      "id": "log-published",
+      "name": "Log Published + Metrics Reminder",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [650, 600],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Trigger: Content Needs Approval": {
+      "main": [
+        [{ "node": "Validate QA Completion", "type": "main", "index": 0 }]
+      ]
+    },
+    "Validate QA Completion": {
+      "main": [
+        [{ "node": "All QA Complete?", "type": "main", "index": 0 }]
+      ]
+    },
+    "All QA Complete?": {
+      "main": [
+        [{ "node": "Log Ready for Approval", "type": "main", "index": 0 }],
+        [{ "node": "Revert Status to Needs QA", "type": "main", "index": 0 }]
+      ]
+    },
+    "Revert Status to Needs QA": {
+      "main": [
+        [{ "node": "Log QA Incomplete", "type": "main", "index": 0 }]
+      ]
+    },
+    "Trigger: Post URL Filled": {
+      "main": [
+        [{ "node": "Extract Post Info", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extract Post Info": {
+      "main": [
+        [{ "node": "Log Published + Metrics Reminder", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [
+    { "name": "get-fractional" },
+    { "name": "content" },
+    { "name": "publishing" }
+  ],
+  "pinData": {}
+}

@@ -1,0 +1,438 @@
+{
+  "name": "A - Lead Capture → Zoho Upsert → Airtable Log",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-capture",
+        "options": {
+          "responseMode": "lastNode"
+        }
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "lead-capture-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.headers['x-webhook-secret'] }}",
+              "operation": "equals",
+              "value2": "={{ $env.N8N_WEBHOOK_SECRET }}"
+            }
+          ]
+        }
+      },
+      "id": "validate-secret",
+      "name": "Validate Webhook Secret",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Normalize and clean input\nconst input = $input.first().json.body || $input.first().json;\n\nconst handle = (input.handle || '').trim();\nconst name = (input.name || '').trim();\nconst email = (input.email || '').trim().toLowerCase();\nconst platform = (input.platform || 'Unknown').trim();\nconst sourceType = (input.source_type || 'DM').trim();\nconst postUrl = (input.post_url || '').trim();\nconst message = (input.message || '').trim();\nconst offerInterest = (input.offer_interest || '').trim();\nconst engagementRecordId = (input.engagement_record_id || '').trim();\n\n// Generate idempotency key\nconst crypto = require('crypto');\nconst idempotencyKey = crypto\n  .createHash('sha256')\n  .update(`lead_capture:${platform.toLowerCase()}:${handle.toLowerCase()}:${postUrl}`)\n  .digest('hex');\n\nreturn [{\n  json: {\n    handle,\n    name,\n    email,\n    platform,\n    sourceType,\n    postUrl,\n    message,\n    offerInterest,\n    engagementRecordId,\n    idempotencyKey\n  }\n}];"
+      },
+      "id": "normalize-clean",
+      "name": "Normalize + Clean + Idempotency Key",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_LEADS }}"
+        },
+        "filterByFormula": "=AND({Name / Handle} = '{{ $json.handle }}', {Source Platform} = '{{ $json.platform }}')"
+      },
+      "id": "check-airtable-duplicate",
+      "name": "Check Airtable for Existing Lead",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [850, 300],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.records?.length || 0 }}",
+              "operation": "greaterThan",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "is-duplicate",
+      "name": "Already Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://www.zohoapis.com/crm/v2/Leads/search",
+        "qs": {
+          "email": "={{ $node['Normalize + Clean + Idempotency Key'].json.email }}",
+          "criteria": "=(Email:equals:{{ $node['Normalize + Clean + Idempotency Key'].json.email }})"
+        },
+        "authentication": "oAuth2",
+        "options": {
+          "retry": {
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "zoho-search",
+      "name": "Search Zoho for Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1250, 200],
+      "credentials": {
+        "oAuth2Api": {
+          "id": "CONFIGURE_ZOHO_OAUTH",
+          "name": "Zoho CRM OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.data && $json.data.length > 0 }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "zoho-exists",
+      "name": "Zoho Lead Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1450, 200]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://www.zohoapis.com/crm/v2/Leads/{{ $json.data[0].id }}",
+        "body": {
+          "data": [
+            {
+              "Source_Platform": "={{ $node['Normalize + Clean + Idempotency Key'].json.platform }}",
+              "Source_Type": "={{ $node['Normalize + Clean + Idempotency Key'].json.sourceType }}",
+              "Original_Post_URL": "={{ $node['Normalize + Clean + Idempotency Key'].json.postUrl }}",
+              "Interest": "={{ $node['Normalize + Clean + Idempotency Key'].json.offerInterest }}"
+            }
+          ]
+        },
+        "options": {
+          "retry": {
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "zoho-update",
+      "name": "Update Zoho Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1650, 100],
+      "credentials": {
+        "oAuth2Api": {
+          "id": "CONFIGURE_ZOHO_OAUTH",
+          "name": "Zoho CRM OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.zohoapis.com/crm/v2/Leads",
+        "body": {
+          "data": [
+            {
+              "Last_Name": "={{ $node['Normalize + Clean + Idempotency Key'].json.name || $node['Normalize + Clean + Idempotency Key'].json.handle }}",
+              "Email": "={{ $node['Normalize + Clean + Idempotency Key'].json.email }}",
+              "Source_Platform": "={{ $node['Normalize + Clean + Idempotency Key'].json.platform }}",
+              "Source_Type": "={{ $node['Normalize + Clean + Idempotency Key'].json.sourceType }}",
+              "Original_Post_URL": "={{ $node['Normalize + Clean + Idempotency Key'].json.postUrl }}",
+              "Interest": "={{ $node['Normalize + Clean + Idempotency Key'].json.offerInterest }}",
+              "Description": "={{ $node['Normalize + Clean + Idempotency Key'].json.message }}"
+            }
+          ]
+        },
+        "options": {
+          "retry": {
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "zoho-create",
+      "name": "Create Zoho Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1650, 300],
+      "credentials": {
+        "oAuth2Api": {
+          "id": "CONFIGURE_ZOHO_OAUTH",
+          "name": "Zoho CRM OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Extract Zoho Lead ID from either update or create response\nconst items = $input.all();\nconst zohoResponse = items[0].json;\nlet zohoId = '';\n\nif (zohoResponse.data && zohoResponse.data.length > 0) {\n  zohoId = zohoResponse.data[0].details?.id || zohoResponse.data[0].id || '';\n}\n\nconst leadData = $node['Normalize + Clean + Idempotency Key'].json;\n\nreturn [{\n  json: {\n    ...leadData,\n    zohoId: String(zohoId)\n  }\n}];"
+      },
+      "id": "extract-zoho-id",
+      "name": "Extract Zoho ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 200]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_LEADS }}"
+        },
+        "fields": {
+          "Name / Handle": "={{ $json.handle }}",
+          "Email": "={{ $json.email }}",
+          "Source": "={{ $json.sourceType }}",
+          "Source Platform": "={{ $json.platform }}",
+          "Stage": "New",
+          "Zoho ID": "={{ $json.zohoId }}",
+          "Notes": "={{ $json.message }}"
+        }
+      },
+      "id": "airtable-create-lead",
+      "name": "Create Airtable Lead",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [2050, 200],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_SYSTEM_LOGS }}"
+        },
+        "fields": {
+          "Severity": "Info",
+          "System": "n8n",
+          "Workflow": "Lead Capture Upsert",
+          "Message": "=Lead upserted: {{ $node['Normalize + Clean + Idempotency Key'].json.handle }} from {{ $node['Normalize + Clean + Idempotency Key'].json.platform }}",
+          "Record Link": "={{ $json.id ? 'https://airtable.com/' + $env.AIRTABLE_BASE_ID + '/' + $env.AT_TABLE_LEADS + '/' + $json.id : '' }}",
+          "Status": "Resolved",
+          "Retry Count": 0
+        }
+      },
+      "id": "log-success",
+      "name": "Log Success",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [2250, 200],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_SYSTEM_LOGS }}"
+        },
+        "fields": {
+          "Severity": "Info",
+          "System": "n8n",
+          "Workflow": "Lead Capture Upsert",
+          "Message": "=Duplicate lead skipped: {{ $node['Normalize + Clean + Idempotency Key'].json.handle }} from {{ $node['Normalize + Clean + Idempotency Key'].json.platform }}",
+          "Status": "Resolved",
+          "Retry Count": 0
+        }
+      },
+      "id": "log-duplicate",
+      "name": "Log Duplicate Skip",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [1250, 450],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_SYSTEM_LOGS }}"
+        },
+        "fields": {
+          "Severity": "Error",
+          "System": "n8n",
+          "Workflow": "Lead Capture Upsert",
+          "Message": "=Failed after retries: {{ $json.error?.message || 'Unknown error' }}",
+          "Payload Excerpt": "={{ JSON.stringify({ handle: $node['Normalize + Clean + Idempotency Key'].json.handle, platform: $node['Normalize + Clean + Idempotency Key'].json.platform }).substring(0, 500) }}",
+          "Status": "New",
+          "Retry Count": 3
+        }
+      },
+      "id": "log-error",
+      "name": "Log Error (Dead Letter)",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [1650, 500],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "=Webhook secret invalid"
+      },
+      "id": "reject-unauthorized",
+      "name": "Reject 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [650, 450]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [{ "node": "Validate Webhook Secret", "type": "main", "index": 0 }]
+      ]
+    },
+    "Validate Webhook Secret": {
+      "main": [
+        [{ "node": "Normalize + Clean + Idempotency Key", "type": "main", "index": 0 }],
+        [{ "node": "Reject 401", "type": "main", "index": 0 }]
+      ]
+    },
+    "Normalize + Clean + Idempotency Key": {
+      "main": [
+        [{ "node": "Check Airtable for Existing Lead", "type": "main", "index": 0 }]
+      ]
+    },
+    "Check Airtable for Existing Lead": {
+      "main": [
+        [{ "node": "Already Exists?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Already Exists?": {
+      "main": [
+        [{ "node": "Log Duplicate Skip", "type": "main", "index": 0 }],
+        [{ "node": "Search Zoho for Lead", "type": "main", "index": 0 }]
+      ]
+    },
+    "Search Zoho for Lead": {
+      "main": [
+        [{ "node": "Zoho Lead Exists?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Zoho Lead Exists?": {
+      "main": [
+        [{ "node": "Update Zoho Lead", "type": "main", "index": 0 }],
+        [{ "node": "Create Zoho Lead", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update Zoho Lead": {
+      "main": [
+        [{ "node": "Extract Zoho ID", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create Zoho Lead": {
+      "main": [
+        [{ "node": "Extract Zoho ID", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extract Zoho ID": {
+      "main": [
+        [{ "node": "Create Airtable Lead", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create Airtable Lead": {
+      "main": [
+        [{ "node": "Log Success", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [
+    { "name": "get-fractional" },
+    { "name": "lead-capture" },
+    { "name": "zoho" }
+  ],
+  "pinData": {}
+}

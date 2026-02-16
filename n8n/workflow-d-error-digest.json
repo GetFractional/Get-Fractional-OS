@@ -1,0 +1,183 @@
+{
+  "name": "D - Daily Error Digest",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily 8 AM Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_SYSTEM_LOGS }}"
+        },
+        "filterByFormula": "=AND(OR({Severity} = 'Error', {Severity} = 'Critical'), {Status} = 'New')",
+        "sort": [
+          {
+            "field": "Timestamp",
+            "direction": "desc"
+          }
+        ]
+      },
+      "id": "fetch-errors",
+      "name": "Fetch Unresolved Errors",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [450, 300],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.records?.length || 0 }}",
+              "operation": "greaterThan",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "has-errors",
+      "name": "Any Errors?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const records = $input.first().json.records || [];\nconst count = records.length;\nconst capped = records.slice(0, 20);\n\nlet tableRows = '';\nfor (const rec of capped) {\n  const f = rec.fields || rec;\n  tableRows += `<tr>\n    <td>${f.Severity || ''}</td>\n    <td>${f.Workflow || ''}</td>\n    <td>${f.Message || ''}</td>\n    <td>${f.Timestamp || ''}</td>\n    <td>${f['Record Link'] ? `<a href=\"${f['Record Link']}\">View</a>` : 'N/A'}</td>\n  </tr>\\n`;\n}\n\nconst overflow = count > 20 ? `<p>...and ${count - 20} more errors.</p>` : '';\n\nconst subject = `Get Fractional OS — ${count} unresolved error${count !== 1 ? 's' : ''}`;\nconst body = `\n<h2>Daily Error Digest</h2>\n<p>${count} unresolved error(s) found in System Logs.</p>\n<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\">\n  <tr>\n    <th>Severity</th>\n    <th>Workflow</th>\n    <th>Message</th>\n    <th>Timestamp</th>\n    <th>Link</th>\n  </tr>\n  ${tableRows}\n</table>\n${overflow}\n<p>Review and resolve in the <a href=\"https://airtable.com\">Airtable System Logs</a> table.</p>\n`;\n\nreturn [{\n  json: { subject, body, errorCount: count }\n}];"
+      },
+      "id": "format-digest",
+      "name": "Format Digest Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 200]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.ALERT_EMAIL }}",
+        "toEmail": "={{ $env.ALERT_EMAIL }}",
+        "subject": "={{ $json.subject }}",
+        "html": "={{ $json.body }}"
+      },
+      "id": "send-email",
+      "name": "Send Digest Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1050, 200],
+      "credentials": {
+        "smtp": {
+          "id": "CONFIGURE_SMTP",
+          "name": "SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_SYSTEM_LOGS }}"
+        },
+        "fields": {
+          "Severity": "Info",
+          "System": "n8n",
+          "Workflow": "Daily Error Digest",
+          "Message": "=Sent error digest with {{ $node['Format Digest Email'].json.errorCount }} errors",
+          "Status": "Resolved",
+          "Retry Count": 0
+        }
+      },
+      "id": "log-digest-sent",
+      "name": "Log Digest Sent",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [1250, 200],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "no-errors-noop",
+      "name": "No Errors - Skip",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [850, 400]
+    }
+  ],
+  "connections": {
+    "Daily 8 AM Trigger": {
+      "main": [
+        [{ "node": "Fetch Unresolved Errors", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Unresolved Errors": {
+      "main": [
+        [{ "node": "Any Errors?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Any Errors?": {
+      "main": [
+        [{ "node": "Format Digest Email", "type": "main", "index": 0 }],
+        [{ "node": "No Errors - Skip", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Digest Email": {
+      "main": [
+        [{ "node": "Send Digest Email", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Digest Email": {
+      "main": [
+        [{ "node": "Log Digest Sent", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [
+    { "name": "get-fractional" },
+    { "name": "monitoring" },
+    { "name": "alerting" }
+  ],
+  "pinData": {}
+}
