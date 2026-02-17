@@ -314,3 +314,80 @@
 - If a record exists in both systems with different data: **Zoho wins for contact/deal data, Airtable wins for operational data (sprint stage, content, engagement)**
 - n8n never overwrites Zoho data without checking existing values first (upsert pattern)
 - All sync operations are logged to System Logs
+
+---
+
+## 10. Addendum: Zoho One Integration (v2)
+
+> Matt is already on Zoho One with CRM, Billing, and Sign deployed. Changes below are additive only.
+
+### Existing Infrastructure (No Changes Needed)
+
+| Module | Status | Notes |
+|---|---|---|
+| Zoho CRM | Deployed | Add custom fields + pipeline per sections 2-3 above |
+| Zoho Billing | Deployed | Integrate for deposit/invoice automation |
+| Zoho Sign | Deployed | Integrate for scope agreement signing |
+
+### Zoho Billing Integration
+
+**Purpose:** Automate deposit collection and invoice generation for sprints.
+
+| Action | Trigger | Zoho Billing Action |
+|---|---|---|
+| Generate deposit invoice | Deal Stage → "Proposal Sent" | Create Invoice: 50% of Deal Amount, Net Due Immediately |
+| Mark deposit paid | Payment received in Zoho Billing | Update Deal: Deposit Paid = true, Stage → "Deposit Paid" |
+| Generate final invoice | Sprint delivered in Airtable | Create Invoice: remaining 50%, Net 15 |
+| Retainer invoice | Monthly (1st of month) | Recurring Invoice for active retainers |
+
+**Fields to add to Zoho Deals:**
+
+| Field | Type | Notes |
+|---|---|---|
+| Zoho Billing Invoice ID (Deposit) | Text | Links to deposit invoice |
+| Zoho Billing Invoice ID (Final) | Text | Links to final invoice |
+| Payment Status | Picklist | `Pending`, `Deposit Paid`, `Fully Paid`, `Overdue` |
+
+**Automation (Zoho Workflow Rule):**
+- When Deal.Stage = "Proposal Sent" AND Deposit Amount > 0 → trigger Zoho Billing API to create invoice
+- When Invoice.Status = "Paid" → update Deal.Deposit Paid = true
+
+### Zoho Sign Integration
+
+**Purpose:** Get scope agreements signed before sprint kickoff.
+
+| Document | When Sent | Template |
+|---|---|---|
+| Sprint Scope Agreement | Deal Stage → "Deposit Paid" | Scope, deliverables, timeline, revision policy, case study clause |
+| Retainer Agreement | When retainer is offered | Monthly scope, terms, cancellation policy |
+
+**Scope Agreement Template Fields (auto-filled from Zoho Deal):**
+- Client Name (from Account)
+- Sprint Name
+- Deliverables (from Offer)
+- Timeline
+- Price + Deposit Amount
+- Revision Policy (standard text)
+- Case Study Permission level (from Account)
+- Pause and Requeue clause
+
+**Automation:**
+- When Deal.Stage = "Deposit Paid" → auto-send Zoho Sign document for e-signature
+- When document signed → update Deal custom field "Agreement Signed" = true
+- When signed → trigger Sprint creation in Airtable (via n8n or manual)
+
+### Updated Revision Policy in Zoho
+
+**Pause and Requeue clause** (added to scope agreement):
+
+> "Sprint timelines assume client feedback within 48 hours of each review milestone (Day 3 Concept Review, Day 10 Draft Review). If no consolidated feedback is received within 48 hours, the sprint will be paused. When the client is ready to resume with consolidated feedback, the sprint will be scheduled at the next available production slot. Paused sprints do not expire but are subject to scheduling availability."
+
+### Skool Affiliate Tracking
+
+| Field | Module | Value |
+|---|---|---|
+| Affiliate Interest | Contact (tag) | `affiliate-interest` tag |
+| Affiliate Link Shared | Contact (checkbox) | true when Skool link was shared |
+| Affiliate Link | Stored in Zoho CRM notes | `https://www.skool.com/aivideobootcamp/about?ref=747639c593724d49b7618bf8bcb2363c` |
+
+**Rule:** Only share after delivering value (post-sprint or post-retainer). Never in automated sequences.

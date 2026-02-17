@@ -1,0 +1,329 @@
+{
+  "name": "E - Social Engagement Capture (FB + IG Webhooks, LinkedIn Poll)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "meta-engagement",
+        "options": {
+          "responseMode": "lastNode"
+        }
+      },
+      "id": "meta-webhook",
+      "name": "Meta Webhook (FB + IG Comments)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 200],
+      "webhookId": "meta-engagement-webhook"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Handle Meta webhook verification (GET) and events (POST)\nconst query = $input.first().json.query || {};\nconst body = $input.first().json.body || $input.first().json;\n\n// Webhook verification challenge\nif (query['hub.mode'] === 'subscribe' && query['hub.verify_token'] === $env.META_WEBHOOK_VERIFY_TOKEN) {\n  return [{ json: { challenge: query['hub.challenge'] } }];\n}\n\n// Process comment events\nconst events = [];\nconst entries = body.entry || [];\n\nfor (const entry of entries) {\n  const changes = entry.changes || [];\n  for (const change of changes) {\n    if (change.field === 'feed' && change.value) {\n      const val = change.value;\n      // Determine platform\n      const isInstagram = val.from && val.from.username;\n      const platform = isInstagram ? 'Instagram' : 'Facebook';\n      \n      events.push({\n        json: {\n          platform,\n          type: 'Comment',\n          post_id: val.post_id || val.media_id || '',\n          comment_id: val.comment_id || val.id || '',\n          author_handle: isInstagram ? val.from.username : (val.from?.name || ''),\n          author_name: val.from?.name || val.from?.username || '',\n          author_id: val.from?.id || '',\n          content: val.message || val.text || '',\n          created_time: val.created_time || new Date().toISOString(),\n          parent_id: val.parent_id || ''\n        }\n      });\n    }\n  }\n}\n\nif (events.length === 0) {\n  return [{ json: { skip: true, reason: 'No comment events found' } }];\n}\n\nreturn events;"
+      },
+      "id": "parse-meta-events",
+      "name": "Parse Meta Webhook Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.skip !== true }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "has-events",
+      "name": "Has Events?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [650, 200]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "linkedin-poll-trigger",
+      "name": "LinkedIn Poll (Every 15 min)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 500]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.linkedin.com/v2/organizationalEntityShareStatistics?q=organizationalEntity&organizationalEntity=urn:li:organization:{{ $env.LINKEDIN_ORG_ID }}",
+        "authentication": "oAuth2",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "linkedin-fetch-posts",
+      "name": "Fetch LinkedIn Company Posts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [450, 500],
+      "credentials": {
+        "oAuth2Api": {
+          "id": "CONFIGURE_LINKEDIN_OAUTH",
+          "name": "LinkedIn OAuth2"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "functionCode": "// Extract recent post URNs and fetch comments\nconst data = $input.first().json;\nconst elements = data.elements || [];\n\n// Get post URNs from last 24 hours\nconst oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);\nconst recentPosts = elements.filter(e => {\n  const created = e.share?.created?.time || 0;\n  return created > oneDayAgo;\n}).map(e => e.share?.activity || '');\n\nreturn recentPosts.map(urn => ({\n  json: { post_urn: urn, platform: 'LinkedIn' }\n}));"
+      },
+      "id": "extract-linkedin-posts",
+      "name": "Extract Recent LinkedIn Posts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 500]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.linkedin.com/v2/socialActions/{{ $json.post_urn }}/comments",
+        "authentication": "oAuth2",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "linkedin-fetch-comments",
+      "name": "Fetch LinkedIn Comments",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [850, 500],
+      "credentials": {
+        "oAuth2Api": {
+          "id": "CONFIGURE_LINKEDIN_OAUTH",
+          "name": "LinkedIn OAuth2"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "functionCode": "// Normalize LinkedIn comments to standard format\nconst data = $input.first().json;\nconst elements = data.elements || [];\n\nreturn elements.map(comment => ({\n  json: {\n    platform: 'LinkedIn',\n    type: 'Comment',\n    post_id: comment.object || '',\n    comment_id: comment['$URN'] || comment.id || '',\n    author_handle: comment.actor || '',\n    author_name: comment.actor || '',\n    author_id: comment.actor || '',\n    content: comment.message?.text || '',\n    created_time: comment.created?.time ? new Date(comment.created.time).toISOString() : new Date().toISOString(),\n    parent_id: comment.parentComment || ''\n  }\n}));"
+      },
+      "id": "normalize-linkedin",
+      "name": "Normalize LinkedIn Comments",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 500]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Generate idempotency key and check for CTA keywords\nconst input = $input.first().json;\nconst crypto = require('crypto');\n\nconst idempotencyKey = crypto\n  .createHash('sha256')\n  .update(`engagement_capture:${input.platform}:${input.post_id}:${input.comment_id}`)\n  .digest('hex');\n\n// CTA keyword detection\nconst ctaKeywords = ['SPRINT', 'TEARDOWN', 'SNAPSHOT', 'HOOKS', 'SCORE', 'BRIEF', 'PROOF', 'FATIGUE', 'SCOPE', 'KIT'];\nconst upperContent = (input.content || '').toUpperCase();\nconst detectedKeyword = ctaKeywords.find(kw => upperContent.includes(kw)) || '';\n\nreturn [{\n  json: {\n    ...input,\n    idempotencyKey,\n    ctaKeywordDetected: detectedKeyword,\n    statusOverride: detectedKeyword ? 'Queued' : 'New'\n  }\n}];"
+      },
+      "id": "generate-key-detect-cta",
+      "name": "Idempotency Key + CTA Detection",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 200]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_ENGAGEMENT }}"
+        },
+        "filterByFormula": "={Idempotency Key} = '{{ $json.idempotencyKey }}'"
+      },
+      "id": "dedup-check",
+      "name": "Check Duplicate",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [1050, 200],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.records?.length || 0 }}",
+              "operation": "equal",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "is-new",
+      "name": "Is New?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1250, 200]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_ENGAGEMENT }}"
+        },
+        "fields": {
+          "Source": "={{ $node['Idempotency Key + CTA Detection'].json.platform }}",
+          "Type": "Comment",
+          "Author Handle": "={{ $node['Idempotency Key + CTA Detection'].json.author_handle }}",
+          "Author Name": "={{ $node['Idempotency Key + CTA Detection'].json.author_name }}",
+          "Content": "={{ $node['Idempotency Key + CTA Detection'].json.content }}",
+          "Platform Post ID": "={{ $node['Idempotency Key + CTA Detection'].json.post_id }}",
+          "Platform Comment ID": "={{ $node['Idempotency Key + CTA Detection'].json.comment_id }}",
+          "Idempotency Key": "={{ $node['Idempotency Key + CTA Detection'].json.idempotencyKey }}",
+          "CTA Keyword Detected": "={{ $node['Idempotency Key + CTA Detection'].json.ctaKeywordDetected }}",
+          "Auto-Captured": true,
+          "Status": "={{ $node['Idempotency Key + CTA Detection'].json.statusOverride }}"
+        }
+      },
+      "id": "create-engagement",
+      "name": "Create Engagement Record",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [1450, 100],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_SYSTEM_LOGS }}"
+        },
+        "fields": {
+          "Severity": "Info",
+          "System": "n8n",
+          "Workflow": "Social Engagement Capture",
+          "Message": "=Engagement captured: {{ $node['Idempotency Key + CTA Detection'].json.author_handle }} on {{ $node['Idempotency Key + CTA Detection'].json.platform }}{{ $node['Idempotency Key + CTA Detection'].json.ctaKeywordDetected ? ' (CTA: ' + $node['Idempotency Key + CTA Detection'].json.ctaKeywordDetected + ')' : '' }}",
+          "Status": "Resolved",
+          "Retry Count": 0
+        }
+      },
+      "id": "log-success",
+      "name": "Log Success",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [1650, 100],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Meta Webhook (FB + IG Comments)": {
+      "main": [
+        [{ "node": "Parse Meta Webhook Events", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Meta Webhook Events": {
+      "main": [
+        [{ "node": "Has Events?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has Events?": {
+      "main": [
+        [{ "node": "Idempotency Key + CTA Detection", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "LinkedIn Poll (Every 15 min)": {
+      "main": [
+        [{ "node": "Fetch LinkedIn Company Posts", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch LinkedIn Company Posts": {
+      "main": [
+        [{ "node": "Extract Recent LinkedIn Posts", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extract Recent LinkedIn Posts": {
+      "main": [
+        [{ "node": "Fetch LinkedIn Comments", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch LinkedIn Comments": {
+      "main": [
+        [{ "node": "Normalize LinkedIn Comments", "type": "main", "index": 0 }]
+      ]
+    },
+    "Normalize LinkedIn Comments": {
+      "main": [
+        [{ "node": "Idempotency Key + CTA Detection", "type": "main", "index": 0 }]
+      ]
+    },
+    "Idempotency Key + CTA Detection": {
+      "main": [
+        [{ "node": "Check Duplicate", "type": "main", "index": 0 }]
+      ]
+    },
+    "Check Duplicate": {
+      "main": [
+        [{ "node": "Is New?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is New?": {
+      "main": [
+        [{ "node": "Create Engagement Record", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Create Engagement Record": {
+      "main": [
+        [{ "node": "Log Success", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [
+    { "name": "get-fractional" },
+    { "name": "social" },
+    { "name": "engagement" }
+  ],
+  "pinData": {}
+}

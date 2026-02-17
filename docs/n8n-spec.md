@@ -379,6 +379,8 @@ Send a daily summary of unresolved errors to Matt.
 | `n8n/workflow-b-url-intake.json` | URL Intake → Brand Research → Approval |
 | `n8n/workflow-c-content-publish.json` | Content Publish Prep → Post URL → Metrics |
 | `n8n/workflow-d-error-digest.json` | Daily Error Digest |
+| `n8n/workflow-e-social-engagement.json` | Social Engagement Capture (FB + IG + LinkedIn) |
+| `n8n/workflow-f-auto-publish.json` | Auto-Publish to Social Platforms |
 
 ### Import Instructions
 
@@ -389,6 +391,8 @@ Send a daily summary of unresolved errors to Matt.
    - Create Airtable credential with `AIRTABLE_API_KEY`
    - Create Zoho CRM OAuth2 credential with client ID, secret, refresh token
    - Create SMTP / Email credential for error digest
+   - Create Meta (Facebook) OAuth2 credential with App ID, App Secret, Page Access Token
+   - Create LinkedIn OAuth2 credential with Client ID, Client Secret
 5. Update all Airtable nodes with your actual Base ID and Table IDs
 6. Activate the workflow
 7. Test with a sample record before going live
@@ -398,7 +402,82 @@ Send a daily summary of unresolved errors to Matt.
 - [ ] All credentials connected (green indicator on each node)
 - [ ] Airtable Base ID and Table IDs updated
 - [ ] Zoho module and field names match your Zoho setup
+- [ ] Meta webhook URL registered in Facebook App dashboard
+- [ ] Meta webhook verify token matches n8n environment variable
+- [ ] LinkedIn Company Page ID configured
 - [ ] Webhook URLs registered where needed
 - [ ] Test run completed with sample data
 - [ ] System Logs record created for test run
 - [ ] Error email received for simulated failure
+
+---
+
+## 8. Addendum: Workflows E, F, G (v2)
+
+> Added per Matt's decisions on social automation and auto-publishing.
+
+### Environment Variables (New)
+
+| Variable | Description | Used By |
+|---|---|---|
+| `META_APP_ID` | Meta (Facebook) App ID | E, F, G |
+| `META_APP_SECRET` | Meta App Secret | E, F, G |
+| `META_PAGE_ACCESS_TOKEN` | Long-lived FB Page Access Token | E, F, G |
+| `META_PAGE_ID` | Facebook Page ID | F |
+| `META_IG_USER_ID` | Instagram Business Account ID | F, G |
+| `META_WEBHOOK_VERIFY_TOKEN` | Token for Meta webhook verification | E |
+| `LINKEDIN_CLIENT_ID` | LinkedIn OAuth2 Client ID | E, F |
+| `LINKEDIN_CLIENT_SECRET` | LinkedIn OAuth2 Client Secret | E, F |
+| `LINKEDIN_ACCESS_TOKEN` | LinkedIn Access Token | E, F |
+| `LINKEDIN_ORG_ID` | LinkedIn Company Page Organization ID | E, F |
+
+### Workflow E: Social Engagement Capture
+
+**Purpose:** Auto-capture comments from FB, IG, and LinkedIn Company Page posts into Airtable Engagement Inbox. No auto-replies.
+
+**Triggers:**
+- Facebook + Instagram: Meta Webhooks (real-time)
+- LinkedIn: Polling every 15 minutes
+
+**Key features:**
+- CTA keyword detection (SPRINT, TEARDOWN, SNAPSHOT, etc.) — flags high-priority engagement
+- Idempotency key per comment to prevent duplicates
+- Auto-links to Content Pipeline post record
+- All captured engagement appears in Daily Cockpit
+
+**See full spec:** `docs/social-automation.md`
+
+### Workflow F: Auto-Publish
+
+**Purpose:** When Matt approves content (Status = "Approved"), auto-publish to the designated platform via official API.
+
+**Safety gate:** Content MUST pass through `Draft → Needs QA → Needs Approval → Approved` before publishing. Matt's approval is still required.
+
+**Supports:**
+- Facebook Page posts (text, with optional link)
+- Instagram posts (requires image attachment in Airtable record)
+- LinkedIn Company Page posts (text, with optional link)
+- "All" platform option — publishes sequentially to all three
+
+**Key features:**
+- Captures Post URL back to Airtable automatically
+- Sets Publish Date on publish
+- Stores Platform Post ID for later metrics capture
+- Partial failure handling (if one platform fails, others still publish)
+
+**See full spec:** `docs/social-automation.md`
+
+### Workflow G: Metrics Capture (24h Post-Publish)
+
+**Purpose:** Pull engagement metrics 24h after publishing via platform APIs.
+
+**Trigger:** Daily batch at 9 AM — finds Published content where Metrics Captured At is empty and Publish Date was yesterday or earlier.
+
+**Metrics captured:**
+- Impressions, Likes/Reactions, Comments Count, Shares/Reposts
+- Link Clicks (where API supports)
+- Writes to Content Pipeline record fields
+
+**Manual supplement:** CTR, conversion data, qualitative notes still entered manually.
+
+**See full spec:** `docs/social-automation.md`

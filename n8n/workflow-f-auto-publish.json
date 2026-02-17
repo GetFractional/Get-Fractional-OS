@@ -1,0 +1,354 @@
+{
+  "name": "F - Auto-Publish to Social Platforms",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            { "mode": "everyMinute", "minute": 5 }
+          ]
+        },
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_CONTENT }}"
+        },
+        "triggerField": "Last Modified Time",
+        "additionalFields": {
+          "formula": "AND({Status} = 'Approved', OR({Scheduled Publish Time} = '', {Scheduled Publish Time} <= NOW()))"
+        }
+      },
+      "id": "trigger-approved",
+      "name": "Trigger: Content Approved + Ready to Publish",
+      "type": "n8n-nodes-base.airtableTrigger",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const record = $input.first().json;\nconst fields = record.fields || record;\n\nconst platform = fields['Platform'] || 'Unknown';\nconst draft = fields['Draft'] || '';\nconst postTitle = fields['Post Title'] || 'Untitled';\nconst recordId = record.id || record.record_id || '';\nconst ctaText = fields['CTA Text'] || '';\nconst imageUrl = '';\n\n// Check for attached media (for Instagram)\nconst media = fields['Image / Media'];\nlet mediaUrl = '';\nif (media && Array.isArray(media) && media.length > 0) {\n  mediaUrl = media[0].url || media[0].thumbnails?.full?.url || '';\n}\n\nconst crypto = require('crypto');\nconst idempotencyKey = crypto\n  .createHash('sha256')\n  .update(`auto_publish:${recordId}:${platform}`)\n  .digest('hex');\n\nreturn [{\n  json: {\n    recordId,\n    platform,\n    draft,\n    postTitle,\n    ctaText,\n    mediaUrl,\n    idempotencyKey,\n    publishToFacebook: platform === 'Facebook' || platform === 'All',\n    publishToInstagram: (platform === 'Instagram' || platform === 'All') && mediaUrl,\n    publishToLinkedIn: platform === 'LinkedIn' || platform === 'All'\n  }\n}];"
+      },
+      "id": "prepare-publish",
+      "name": "Prepare Publish Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.publishToFacebook }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "should-publish-fb",
+      "name": "Publish to Facebook?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [650, 150]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $env.META_PAGE_ID }}/feed",
+        "body": {
+          "message": "={{ $node['Prepare Publish Data'].json.draft }}",
+          "access_token": "={{ $env.META_PAGE_ACCESS_TOKEN }}"
+        },
+        "options": {
+          "retry": {
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "facebook-publish",
+      "name": "Publish to Facebook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [850, 50],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.publishToInstagram }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "should-publish-ig",
+      "name": "Publish to Instagram?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $env.META_IG_USER_ID }}/media",
+        "body": {
+          "image_url": "={{ $node['Prepare Publish Data'].json.mediaUrl }}",
+          "caption": "={{ $node['Prepare Publish Data'].json.draft }}",
+          "access_token": "={{ $env.META_PAGE_ACCESS_TOKEN }}"
+        },
+        "options": {
+          "retry": {
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "instagram-create-container",
+      "name": "IG: Create Media Container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [850, 250],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $env.META_IG_USER_ID }}/media_publish",
+        "body": {
+          "creation_id": "={{ $json.id }}",
+          "access_token": "={{ $env.META_PAGE_ACCESS_TOKEN }}"
+        }
+      },
+      "id": "instagram-publish",
+      "name": "IG: Publish Container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1050, 250],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.publishToLinkedIn }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "should-publish-li",
+      "name": "Publish to LinkedIn?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [650, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.linkedin.com/v2/ugcPosts",
+        "authentication": "oAuth2",
+        "body": {
+          "author": "=urn:li:organization:{{ $env.LINKEDIN_ORG_ID }}",
+          "lifecycleState": "PUBLISHED",
+          "specificContent": {
+            "com.linkedin.ugc.ShareContent": {
+              "shareCommentary": {
+                "text": "={{ $node['Prepare Publish Data'].json.draft }}"
+              },
+              "shareMediaCategory": "NONE"
+            }
+          },
+          "visibility": {
+            "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
+          }
+        },
+        "options": {
+          "retry": {
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "linkedin-publish",
+      "name": "Publish to LinkedIn",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [850, 450],
+      "credentials": {
+        "oAuth2Api": {
+          "id": "CONFIGURE_LINKEDIN_OAUTH",
+          "name": "LinkedIn OAuth2"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "functionCode": "// Collect results from all platform publish attempts\nconst items = $input.all();\nconst publishData = $node['Prepare Publish Data'].json;\n\n// Determine post URLs from responses\nlet fbPostId = '';\nlet igMediaId = '';\nlet liPostUrn = '';\nlet postUrls = [];\nlet errors = [];\n\n// Check each platform result\nfor (const item of items) {\n  const json = item.json;\n  if (json.id && publishData.publishToFacebook) {\n    fbPostId = json.id;\n    const parts = String(json.id).split('_');\n    if (parts.length === 2) {\n      postUrls.push(`https://facebook.com/${parts[0]}/posts/${parts[1]}`);\n    }\n  }\n  if (json.id && publishData.publishToInstagram) {\n    igMediaId = json.id;\n    postUrls.push(`https://instagram.com/p/${json.id}`);\n  }\n  if (json.id && publishData.publishToLinkedIn) {\n    liPostUrn = json.id;\n    postUrls.push(`LinkedIn post: ${json.id}`);\n  }\n  if (json.error) {\n    errors.push(json.error.message || JSON.stringify(json.error));\n  }\n}\n\nreturn [{\n  json: {\n    recordId: publishData.recordId,\n    postTitle: publishData.postTitle,\n    platform: publishData.platform,\n    postUrl: postUrls[0] || '',\n    allPostUrls: postUrls.join('; '),\n    platformPostId: fbPostId || igMediaId || liPostUrn || '',\n    hasErrors: errors.length > 0,\n    errorMessages: errors.join('; '),\n    publishedCount: postUrls.length\n  }\n}];"
+      },
+      "id": "collect-results",
+      "name": "Collect Publish Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_CONTENT }}"
+        },
+        "id": "={{ $json.recordId }}",
+        "fields": {
+          "Status": "Published",
+          "Post URL": "={{ $json.postUrl }}",
+          "Platform Post ID": "={{ $json.platformPostId }}",
+          "Publish Date": "={{ new Date().toISOString().split('T')[0] }}"
+        }
+      },
+      "id": "update-airtable-published",
+      "name": "Update Airtable: Published",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [1450, 200],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.AT_TABLE_SYSTEM_LOGS }}"
+        },
+        "fields": {
+          "Severity": "={{ $json.hasErrors ? 'Warn' : 'Info' }}",
+          "System": "n8n",
+          "Workflow": "Auto-Publish",
+          "Message": "={{ $json.hasErrors ? 'Partial publish for ' + $json.postTitle + ': ' + $json.errorMessages : 'Published ' + $json.postTitle + ' to ' + $json.platform + ' at ' + $json.postUrl }}",
+          "Record Link": "={{ $json.postUrl }}",
+          "Status": "={{ $json.hasErrors ? 'New' : 'Resolved' }}",
+          "Retry Count": 0
+        }
+      },
+      "id": "log-publish",
+      "name": "Log Publish Result",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [1650, 200],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Airtable Token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Trigger: Content Approved + Ready to Publish": {
+      "main": [
+        [{ "node": "Prepare Publish Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare Publish Data": {
+      "main": [
+        [
+          { "node": "Publish to Facebook?", "type": "main", "index": 0 },
+          { "node": "Publish to Instagram?", "type": "main", "index": 0 },
+          { "node": "Publish to LinkedIn?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Publish to Facebook?": {
+      "main": [
+        [{ "node": "Publish to Facebook", "type": "main", "index": 0 }],
+        [{ "node": "Collect Publish Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "Publish to Facebook": {
+      "main": [
+        [{ "node": "Collect Publish Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "Publish to Instagram?": {
+      "main": [
+        [{ "node": "IG: Create Media Container", "type": "main", "index": 0 }],
+        [{ "node": "Collect Publish Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "IG: Create Media Container": {
+      "main": [
+        [{ "node": "IG: Publish Container", "type": "main", "index": 0 }]
+      ]
+    },
+    "IG: Publish Container": {
+      "main": [
+        [{ "node": "Collect Publish Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "Publish to LinkedIn?": {
+      "main": [
+        [{ "node": "Publish to LinkedIn", "type": "main", "index": 0 }],
+        [{ "node": "Collect Publish Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "Publish to LinkedIn": {
+      "main": [
+        [{ "node": "Collect Publish Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "Collect Publish Results": {
+      "main": [
+        [{ "node": "Update Airtable: Published", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update Airtable: Published": {
+      "main": [
+        [{ "node": "Log Publish Result", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [
+    { "name": "get-fractional" },
+    { "name": "social" },
+    { "name": "publishing" }
+  ],
+  "pinData": {}
+}

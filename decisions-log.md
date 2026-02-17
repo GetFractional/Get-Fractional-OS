@@ -1,149 +1,172 @@
 # Decisions Log — Get Fractional OS Build
 
 > Documenting design decisions, simplest-viable interpretations of ambiguities, and items needing Matt's approval.
+>
+> **Updated:** Feb 17, 2026 — Matt's responses integrated, expert rulings finalized.
 
 ---
 
 ## Design Decisions Made
 
-### D-001: Single Airtable Base
+### D-001: Single Airtable Base *(Confirmed)*
 
-**Decision:** All 11 tables live in one base ("Get Fractional OS (Core)").
+**Decision:** All tables stay in one base ("Get Fractional OS (Core)").
 
-**Rationale:** The spec explicitly says "single base MVP" and flags multi-base fragmentation as a "WON'T." One base keeps linked records simple and avoids cross-base sync complexity.
+**Matt's input:** "If it's not any more complicated to do multi-base, do that. But speed to market and cashflow is most important."
 
-**Risk:** If the base exceeds 50,000 records total, performance may degrade. At current scale (solo, 4 sprints/mo), this is not a concern for 12+ months.
+**Expert ruling:** Multi-base adds real complexity — cross-base sync via n8n, no direct linked records between bases, separate API connections per base, and future maintenance burden. Single base is faster to build, simpler to maintain, and has zero scaling issues at this volume (solo, <1,000 records/month). **Keep single base.**
 
-### D-002: n8n Over Airtable Automations for External APIs
+**Risk:** If base exceeds 50,000 records, performance degrades. At current trajectory, that's 12–18+ months away. If/when it happens, split along clean boundaries (e.g., System Logs → separate base).
 
-**Decision:** All external API calls (Zoho, URL fetching) go through n8n. Airtable Automations handle only internal record operations (status changes, notifications, log writes).
+### D-002: n8n Over Airtable Automations for External APIs *(Confirmed)*
 
-**Rationale:** Spec Section 9 explicitly defines this split. n8n provides retry logic, idempotency, dead-letter handling, and credential management that Airtable Automations lack.
+**Decision:** Unchanged. All external API calls go through n8n. Airtable Automations handle internal-only operations.
 
-### D-003: Engagement Inbox is Manual-Entry at MVP
+### D-003: Engagement Capture → Automated via Official APIs *(Changed)*
 
-**Decision:** Social engagement (comments, DMs) is captured manually by Matt or a future VA creating Airtable records. No automated social scraping.
+**Decision:** Automate social engagement capture using **official platform APIs only** (Meta Graph API for FB/IG, LinkedIn Marketing API for Company Page). No scraping, no unofficial tools.
 
-**Rationale:** Spec Section 1 (Assumptions Register) states "Human-in-loop for publishing and replies is required to avoid platform risk" with High confidence. Automated comment scraping would violate platform ToS.
+**Matt's input:** "We should automate this if possible, as long as I don't get banned or suspended."
 
-**Trade-off:** More manual work, but zero platform risk. A VA can handle this once volume grows.
+**Expert ruling:** This is safe and achievable using only first-party APIs:
+- **Facebook + Instagram:** Meta Graph API v21 provides webhooks for real-time comment notifications on Page posts and IG Business Account posts. Fully ToS-compliant. Read comments, capture author, message, post reference.
+- **LinkedIn:** Marketing API allows reading comments on Company Page posts. Personal profile comments require a social management tool (Buffer, Hootsuite, or Agorapulse) that has official LinkedIn API access and can forward engagement data via webhook. Safe and ToS-compliant.
+- **DMs:** Facebook/IG DMs accessible via Messenger Platform API (requires app review). LinkedIn DMs have no API access — must remain manual capture.
+- **Replies still manual:** We capture engagement automatically, but Matt still replies manually. The automation is inbound capture only.
 
-### D-004: Content Publishing is Always Manual
+**New workflow:** n8n Workflow E (Social Engagement Capture). See `social-automation.md`.
 
-**Decision:** No auto-publishing to any social platform. The workflow moves content to "Scheduled" status, but Matt manually publishes.
+### D-004: Auto-Publishing via Official APIs *(Changed)*
 
-**Rationale:** Spec hard constraint: "publishing + comment replies stay manual/approval-gated." This appears in multiple places and is a core safety principle.
+**Decision:** Automate content publishing using **official platform APIs** with an approval gate. Matt approves in Airtable → system publishes to platforms automatically.
 
-### D-005: Zoho is SSOT for Contact/Deal Data, Airtable for Everything Else
+**Matt's input:** "Automate posting if it increases efficiency and doesn't hurt impressions/engagement/conversions."
 
-**Decision:** Contact details and deal pipeline live in Zoho as the authoritative source. Airtable stores a `Zoho ID` reference field. Operational data (sprints, content, engagement) lives in Airtable as SSOT.
+**Expert ruling:** Publishing via official APIs does **not** penalize reach or engagement. All major scheduling tools (Buffer, Later, Hootsuite) use the same APIs. Platforms don't distinguish between API posts and manual posts.
+- **Facebook Pages:** Meta Graph API — POST to /{page-id}/feed
+- **Instagram Business:** Meta Graph API — Content Publishing API (requires image/video upload → publish flow)
+- **LinkedIn Company Page:** Marketing API — POST to ugcPosts endpoint
+- **LinkedIn Personal Profile:** Share API — POST to shares endpoint (limited formatting)
 
-**Rationale:** Spec Section 8 defines this SSOT split. Zoho handles CRM-specific concerns (pipeline stages, SLAs, follow-up sequences). Airtable handles operational delivery.
+**Safety gate preserved:** Content must reach Status = "Approved" in Airtable before the auto-publish workflow triggers. Matt's approval is still required — we just eliminate the copy-paste-publish step.
 
-### D-006: Idempotency Key Strategy
+**New workflow:** n8n Workflow F (Auto-Publish). See `social-automation.md`.
 
-**Decision:** Using SHA-256 hash of deterministic field combinations per workflow:
-- Lead Capture: `platform + handle + post_url`
-- URL Intake: `account_id + website_url`
-- Content Publish: `content_record_id`
+### D-005: Zoho SSOT for Contact/Deal Data *(Confirmed)*
 
-**Rationale:** Spec requires idempotency keys. SHA-256 is deterministic, collision-resistant, and the field combinations ensure uniqueness within each workflow context.
+**Decision:** Unchanged. Zoho One is already deployed with CRM, Billing, and Sign. Airtable handles operational data.
 
-### D-007: Retry Policy = 3 Attempts, Exponential Backoff
+**Updated context:** Matt is on Zoho One with CRM, Billing, and Sign already set up. No greenfield Zoho setup needed — just custom field additions and pipeline configuration.
 
-**Decision:** All n8n workflows retry external API calls 3 times with 2s/4s/8s backoff before dead-lettering to System Logs.
+### D-006: Idempotency Key Strategy *(Confirmed)*
 
-**Rationale:** Spec Section 9 requires "exponential backoff, capped at 3" and "dead-letter queue." Three retries balances persistence with avoiding rate-limit escalation.
+**Decision:** Unchanged. SHA-256 hash of deterministic field combinations per workflow. Extended to cover new Workflows E and F:
+- Social Engagement: `engagement_capture:{platform}:{post_id}:{comment_id}`
+- Auto-Publish: `auto_publish:{content_record_id}:{platform}`
 
-### D-008: System Logs Table as Universal Audit Trail
+### D-007: Retry Policy *(Confirmed)*
 
-**Decision:** One System Logs table serves all workflows and automations. No separate log tables per system.
+**Decision:** Unchanged. 3 retries, exponential backoff (2s/4s/8s), dead-letter to System Logs.
 
-**Rationale:** Spec defines a single System Logs table with a `System` field to differentiate sources. This keeps the audit trail centralized and queryable.
+### D-008: Universal System Logs *(Confirmed)*
 
-### D-009: Campaign Kits as Separate Table (Not Embedded in Sprints)
+**Decision:** Unchanged. Single System Logs table for all workflows. Matt confirmed: "These should be captured so we can reference and debug them over time."
 
-**Decision:** Campaign Kits are a linked table, not fields embedded in the Sprints table.
+### D-009: Campaign Kits as Separate Table *(Confirmed)*
 
-**Rationale:** Spec Section 8 defines Campaign Kits as a separate table with rollup fields (Angles Count, Hooks Count). This allows one Sprint to have one Kit record, keeping the Sprint record clean and the Kit extensible.
+**Decision:** Unchanged. Linked table, not embedded fields.
 
-### D-010: Client Portal via Airtable Interface Sharing
+### D-010: Client Portal → Softr *(Changed)*
 
-**Decision:** Client portals are shared Airtable Interface pages filtered by Account, not a custom-built portal.
+**Decision:** Build the client portal using **Softr** connected to Airtable. Not Airtable Interfaces, not a custom-coded portal.
 
-**Rationale:** Spec Section 8 says "Share Interface pages read-only. No raw base access, no automations exposed." Airtable Interface sharing is the simplest implementation that meets this requirement.
+**Matt's input:** "Don't use Airtable — it's expensive and not the best UX. If we can vibe-code a portal, do that. Unless Softr would be cheaper."
 
-**Limitation:** Limited design control. If a more polished client experience is needed later, consider Softr or a custom portal.
+**Expert ruling:** Softr is the right call for MVP. Here's why:
+- **Softr:** $59/mo (Business plan), connects directly to Airtable, drag-and-drop portal builder, custom domains, client login, looks professional. Build time: 1-2 days.
+- **Custom coded (Next.js):** Free hosting (Vercel), but 5-10 days build time, ongoing maintenance, and you're maintaining code. Better long-term flexibility, but wrong for MVP.
+- **Airtable Interfaces:** Included in plan, but limited design, no custom domain, clunky UX. Matt's right that it's not great.
 
-### D-011: Workflow B (URL Intake) Uses Basic HTML Text Extraction
+**Recommendation:** Start with Softr. If you outgrow it (need custom logic, multi-tenant complexity), migrate to a custom portal later. Softr's monthly cost is negligible vs. the time saved.
 
-**Decision:** URL content is fetched via HTTP request and parsed with basic HTML tag stripping. No headless browser rendering.
+See `client-portal-spec.md` for full Softr build spec.
 
-**Rationale:** Spec says "light crawl" and "respect robots." Basic text extraction covers most marketing sites. JavaScript-rendered SPAs may not extract fully, but this is acceptable for MVP. The manual fallback covers edge cases.
+### D-011: Basic HTML Text Extraction *(Confirmed)*
 
-### D-012: Metrics Capture is Manual at MVP
+**Decision:** Unchanged. Basic tag stripping for URL intake. Manual fallback for JS-heavy SPAs.
 
-**Decision:** After content is published and Post URL is captured, a notification/reminder is created but metrics are entered manually. No automated social API metrics pull.
+### D-012: Metrics Capture → Automated Where Possible *(Updated)*
 
-**Rationale:** Spec Section 12 (MoSCoW) lists "Metrics capture automation" as COULD (nice-to-have). Social platform APIs require approval processes and add complexity. Manual entry works for 5 posts/week.
+**Decision:** Since we're now integrating official social APIs (D-003, D-004), we can pull basic post metrics automatically. Auto-capture: impressions, likes, comments count, shares. Manual supplement: click-throughs, conversions, qualitative notes.
 
-### D-013: Added Workflow D (Daily Error Digest)
+**Rationale:** The social API connections needed for D-003 and D-004 give us read access to post metrics at no additional cost. Adding a metrics pull to the auto-publish workflow is minimal extra work.
 
-**Decision:** Created a fourth n8n workflow not explicitly spec'd but required by the error handling design: Daily Error Digest email.
+### D-013: Daily Error Digest *(Confirmed)*
 
-**Rationale:** Spec Section 9 says "Alerting: daily digest of errors to your email/Slack." The digest workflow operationalizes this requirement. Without it, the System Logs table would accumulate unreviewed errors.
+**Decision:** Unchanged. Workflow D stays as designed.
 
-### D-014: Sprint Stage Includes "Proof Capture" Between Delivered and Complete
+### D-014: Proof Capture Stage *(Confirmed)*
 
-**Decision:** Added "Proof Capture" as a stage between "Delivered" and "Complete."
-
-**Rationale:** Spec Section 5 and the implementation runbook emphasize proof capture as a critical step. Without a dedicated stage, proof capture could be skipped. The stage makes it visible in the Kanban view and the Sprint Delivery Cockpit.
+**Decision:** Unchanged. "Proof Capture" stage between "Delivered" and "Complete."
 
 ---
 
-## Items Needing Matt's Approval
+## Approved Items (Formerly Needing Approval)
 
-### A-001: Founders Promo Pricing
+### A-001: Founders Promo + Value Ladder *(Resolved)*
 
-**Question:** The spec mentions $3,500 founders promo "with tight scope." Should this be available to the first N clients, first N days, or by invitation only?
+**Matt's input:** "Bring expert insights on the most effective ways we can profitably build a 50%+ margin offer. I want multiple offers per step in the value ladder to consider for testing."
 
-**Current implementation:** Offer record created with Price Notes = "Founders promo $3.5k." No automated discount logic. Matt applies at his discretion.
+**Expert ruling:** Full value ladder with margin analysis, multiple testable options per tier, and fulfillment time estimates documented in `docs/value-ladder.md`. Key decisions:
+- **Founders promo:** First 5 clients, invitation-only, requires anonymized case study permission. Creates urgency + proof pipeline.
+- **$7 tripwires:** AI-assisted production (15-30 min each) using URL + prompt templates. Massive margin. Purpose is qualification, not revenue.
+- **Core sprints:** $4k–$8k at 20–25 hrs work = $160–$400/hr effective rate. Above 50% margin after all costs.
+- **Retainers:** Highest margin per hour. 8–12 hrs/mo at $3k–$8k = $250–$1,000/hr.
 
-### A-002: Revision Policy — 48-Hour Silence = Approval
+### A-002: Revision Policy — Delay Clause *(Resolved)*
 
-**Question:** The runbook SOP states "If no feedback within 48 hours of delivery: considered approved." Does Matt want this to be a soft reminder or a hard policy communicated to clients?
+**Matt's input:** "Clients tend to be behind. Forcing forward creates friction. But there should be consequences."
 
-**Current implementation:** Documented in the Revision Policy SOP. Not auto-enforced by any automation.
+**Expert ruling:** Implement a **"pause and requeue"** policy:
+- If no client feedback within 48 hours, the sprint is **paused** (not auto-approved).
+- Matt sends a courtesy notification: "I'm pausing your sprint to give you time. When you're ready with consolidated feedback, I'll slot you into my next available window."
+- **Consequence:** Matt moves to other work. Client loses their active slot. Resume depends on Matt's availability.
+- **Contract language:** "Sprint timelines assume client feedback within 48 hours of each review milestone. Delays beyond 48 hours will pause the sprint. Resumed sprints are scheduled at the next available production slot."
+- This is firm but not adversarial. It respects client timing while protecting Matt's schedule.
 
-### A-003: Case Study Permission — When to Ask
+### A-003: Case Study Permission — At Intake *(Resolved)*
 
-**Question:** Should case study permission be asked at intake (before work starts) or after delivery (when proof exists)?
+**Matt's input:** "Best to get it in writing early. But I want clients wanting to showcase their results."
 
-**Current implementation:** Field exists on both Account (Airtable) and Contact (Zoho). The runbook places the ask in the post-delivery sequence (Day 3 after delivery). The founders promo already conditions on "case study permission."
+**Expert ruling:** **Ask at intake, upgrade after delivery.**
+- **At intake (in scope agreement):** Include clause: "Client grants permission for [Full Public / Anonymized / Process Only] use of project outcomes in case studies and marketing materials."
+- **Founders promo discount explicitly requires:** "Anonymized" or "Full Public" as condition of the reduced rate. This is framed as: "In exchange for the founders rate, we ask permission to share anonymized results."
+- **After delivery:** Ask if they'd like to upgrade from Anonymized → Full Public. Frame it as: "Your results were great — would you be open to us featuring [Brand Name] specifically? We'd link to your site and give you the spotlight."
+- This gets legal coverage at day 0 and makes the post-delivery ask about upgrading, not requesting for the first time.
 
-### A-004: Tripwire Fulfillment Method
+### A-004: Tripwire Design *(Resolved)*
 
-**Question:** The $7 Hook Pack and $7 Angle Pack — are these pre-built templates customized per client URL, or fully custom builds per purchaser?
+**Matt's input:** "Make sure it's something people will actually need and want and be willing to pay without issue."
 
-**Current implementation:** Offer records created with generic descriptions. Fulfillment SOP needs Matt's input on production method (template vs. custom).
+**Expert ruling:** Full tripwire catalog with fulfillment specs, margin analysis, and testing priority documented in `docs/value-ladder.md`. Key insight: tripwires at $7–$97 exist to **qualify buyers and demonstrate capability**, not to generate meaningful revenue. The real test: does the tripwire buyer convert to a $4k+ sprint within 30 days?
 
-### A-005: Zoho vs. Simpler CRM
+### A-005: Zoho One Already Deployed *(Resolved)*
 
-**Question:** The spec assumes Zoho CRM. If Matt hasn't already committed to Zoho, a lighter option (e.g., Airtable-only with pipeline views) could reduce setup complexity for MVP.
+**Matt's input:** "Already committed to Zoho One with CRM, Billing, and Sign set up. Just need to implement changes relevant to what we're doing."
 
-**Current implementation:** Full Zoho spec built per spec requirements. If Zoho is deferred, the Leads table in Airtable can serve as a temporary pipeline with the Kanban view by Stage.
+**Expert ruling:** Updated `docs/zoho-spec.md` to account for existing infrastructure. Changes are additive only — custom fields, pipeline stages, workflow rules. No module reinstall needed. Zoho Billing integration for deposit/invoice automation and Zoho Sign for scope agreements are now included.
 
-### A-006: Higgsfield Integration Timing
+### A-006: AI Video Integration *(Resolved)*
 
-**Question:** Spec mentions "Higgsfield UI-first now, API later." What Higgsfield outputs should be stored in Airtable, and in which table?
+**Matt's input:** Detailed capabilities of Nano Banana Pro (images: up to 14 reference images, prompt, aspect ratio, resolution up to 4K, 1-4 variants, drawing), Kling 3.0 (video: start/end frame, multi-shot, prompt, audio, 3 reference elements, 5-15s, up to 1080p), and Veo 3.1 (video: 4-8s, aspect ratio, resolution up to 1080p).
 
-**Current implementation:** No Higgsfield integration built. Prompts/settings/outputs can be stored as attachments or links in Knowledge Library or Campaign Kits when ready.
+**Expert ruling:** New table "AI Video Projects" added to Airtable spec. Stores prompts, settings, reference image links, output links, and links to the Sprint/Campaign Kit they serve. UI-first workflow for now (use the tools directly), but Airtable tracks what was generated, with what settings, for which client. This creates a prompt library and makes sprint fulfillment repeatable. See `docs/ai-video-spec.md`.
 
-### A-007: Skool Affiliate Tracking
+### A-007: Skool Affiliate *(Resolved)*
 
-**Question:** Should affiliate referrals be tracked as their own lead source in Zoho, or just as a tag on existing contacts?
+**Matt's input:** Affiliate link: `https://www.skool.com/aivideobootcamp/about?ref=747639c593724d49b7618bf8bcb2363c`
 
-**Current implementation:** Zoho tag `affiliate-interest` defined. Airtable doesn't have a dedicated Affiliate table. The simplest approach: tag on existing Lead/Contact records.
+**Expert ruling:** Track affiliate referrals via a tag on Lead/Contact records in both Zoho and Airtable. Add "Affiliate Referrals" view in Airtable Leads table. The affiliate link is stored in the Offers table as a "Lead Magnet" tier offer (Offer Name: "AI Video Bootcamp — Skool Affiliate") with the link in the SOP Link field. Recommendation sequence: share only after delivering value (post-sprint or post-retainer), never in cold outreach.
 
 ---
 
@@ -152,9 +175,11 @@
 | # | Ambiguity | Resolution | Confidence |
 |---|---|---|---|
 | 1 | "Airtable AI fields" — which AI provider? | Use Airtable's built-in AI field feature (if on a plan that supports it). If not, leave Summary/Key Excerpts as manual long text fields for now. | Medium |
-| 2 | Content Pipeline "Metrics capture task" — what metrics? | At MVP: impressions, comments, DMs, link clicks. Entered manually. Specific fields not added to avoid premature structure. | Medium |
+| 2 | Content Pipeline "Metrics capture task" — what metrics? | Auto-capture via API: impressions, likes, comments count, shares. Manual supplement: CTR, conversions, qualitative notes. | High |
 | 3 | "Campaign Brief generation" after approval — what format? | Campaign Brief = a Campaign Kit record with pre-populated Brand Brief, Objection Map, and initial Angles/Hooks from the AI research. Not a separate document format. | High |
 | 4 | Engagement Inbox "Owner" field — who owns engagement? | Matt (solo). Field exists for future team scaling. Default is Matt. | High |
 | 5 | "Approval Workflow Template" lead magnet — what exactly? | A downloadable PDF or Notion template showing a simple content approval flow (Draft → QA → Approve → Publish). Fulfillment TBD by Matt. | Low |
 | 6 | KPI Dashboard "Cycle time per sprint stage" | Requires date-tracking per stage transition. At MVP, track Start Date and Due Date only. Full stage-transition timestamps can be added later via Airtable automations that log date changes. | Medium |
 | 7 | n8n Workflow B "Create Approval task" — where? | Created as a notification in Airtable (visible in Daily Cockpit) rather than a separate Tasks table. A Tasks table is not in the MVP spec. If needed later, add a lightweight Tasks table. | High |
+| 8 | LinkedIn personal profile automation limitations | LinkedIn's API only supports Company Page posts reliably. For personal profile posts: use a social management tool (Buffer/Hootsuite) with official LinkedIn integration, or publish personal posts manually. Company Page auto-publish works natively via API. | High |
+| 9 | Instagram content publishing requires image/video first | Meta's Content Publishing API requires a two-step flow: (1) create media container with image/video URL, (2) publish container. n8n workflow handles this. Images must be hosted on a public URL before publishing. | High |

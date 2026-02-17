@@ -208,8 +208,8 @@ You can sell, fulfill, capture proof, and repeat without chaos. First case study
 |---|---|
 | 1 sprint fully delivered + proof captured | Sprint Stage = "Complete", Proof Captured = true |
 | First case study or proof object published | Content Pipeline record with proof content |
-| All 4 n8n workflows operational | Each workflow has successful runs in n8n execution log |
-| Client Portal shared with first client | Client has received link + confirmed access |
+| All 7 n8n workflows operational | Each workflow has successful runs in n8n execution log |
+| Client Portal (Softr) shared with first client | Client has received link + confirmed access |
 | Tripwire ($7 Hook Pack) ready to sell | Offer record exists, checkout link works |
 | Revision policy enforced on first sprint | Sprint Revision Rounds tracked, no scope creep |
 | All Airtable automations firing | System Logs has Info records from each automation |
@@ -225,7 +225,7 @@ You can sell, fulfill, capture proof, and repeat without chaos. First case study
 
 ### Checklist
 
-- [ ] Launch tripwire checkout funnel ($7 Hook Pack, $7 Angle Pack)
+- [ ] Launch tripwire checkout funnel ($7 Hook Pack, $7 Angle Pack) via Zoho Billing
 - [ ] Build lead magnet opt-in forms → webhook → auto-capture
 - [ ] Publish 2–3 case studies / proof objects
 - [ ] Close 3–5 total sprints ($20k–$30k collected)
@@ -235,6 +235,85 @@ You can sell, fulfill, capture proof, and repeat without chaos. First case study
 - [ ] Start Reddit engagement (genuine participation, no link spam)
 - [ ] Begin pre-selling Agency OS Install interest list
 - [ ] Create "About Matt + Get Fractional" page with schema markup
+- [ ] Deploy Zoho Sign scope agreement template
+- [ ] Set up Zoho Billing recurring invoices for retainers
+
+---
+
+## Phase 5: New Workflows Build Plan (Social Automation + Portal)
+
+> These items integrate into the Day 0–14 phases but are listed separately for clarity.
+
+### Social Platform Setup (Day 3–5)
+
+#### Codex Does
+- [ ] **Meta Developer App setup:**
+  - Create Meta App at developers.facebook.com
+  - Configure Facebook Page permissions: `pages_read_engagement`, `pages_manage_posts`, `pages_read_user_content`
+  - Configure Instagram permissions: `instagram_basic`, `instagram_content_publish`, `instagram_manage_comments`
+  - Generate long-lived Page Access Token (or System User token for no-expiry)
+  - Subscribe to Page feed webhook
+  - Set webhook callback URL to n8n Workflow E endpoint
+- [ ] **LinkedIn Developer App setup:**
+  - Create app at developer.linkedin.com
+  - Add products: "Share on LinkedIn", "Marketing Developer Platform"
+  - Configure scopes: `r_organization_social`, `w_organization_social`, `rw_organization_admin`
+  - Generate OAuth2 tokens
+  - Note Company Page Organization ID
+- [ ] **Deploy n8n Workflow E** (Social Engagement Capture):
+  - Import `workflow-e-social-engagement.json`
+  - Configure Meta and LinkedIn credentials
+  - Test Meta webhook verification handshake
+  - Test with a sample FB/IG comment
+  - Verify Engagement Inbox record created in Airtable
+  - Verify CTA keyword detection works
+- [ ] **Deploy n8n Workflow F** (Auto-Publish):
+  - Import `workflow-f-auto-publish.json`
+  - Configure platform credentials
+  - Test with a sample content record (Status = "Approved")
+  - Verify post appears on each platform
+  - Verify Post URL captured back to Airtable
+  - Verify System Logs entry created
+
+### Softr Client Portal (Day 5–7)
+
+#### Codex Does
+- [ ] Create Softr account (Business plan, $59/mo)
+- [ ] Connect Airtable base as data source
+- [ ] Set up custom domain: `portal.getfractional.com`
+- [ ] Build Dashboard page (sprint status, feedback items, deliverables)
+- [ ] Build Timeline page (milestone display)
+- [ ] Build Deliverables page (download links)
+- [ ] Build Feedback page (form → Sprint.Client Feedback field)
+- [ ] Configure user filtering (email → Account)
+- [ ] Add branding (logo, colors, fonts)
+- [ ] Test with sample client account
+- [ ] Create invite flow documentation
+
+### Zoho Billing + Sign Integration (Day 7–10)
+
+#### Codex Does
+- [ ] Create Sprint Scope Agreement template in Zoho Sign
+  - Include: scope, deliverables, timeline, revision policy, case study clause, pause-and-requeue clause
+- [ ] Configure Zoho Billing:
+  - Create invoice template for Sprint deposits (50%)
+  - Create invoice template for Sprint final payment
+  - Create recurring invoice template for retainers
+- [ ] Set up Zoho Workflow Rules:
+  - Deal.Stage = "Proposal Sent" → auto-generate deposit invoice
+  - Invoice.Paid → update Deal.Deposit Paid + advance Stage
+  - Deal.Stage = "Deposit Paid" → auto-send Zoho Sign document
+  - Document.Signed → update Deal.Agreement Signed
+- [ ] Test full flow: Proposal Sent → Invoice → Payment → Sign → Sprint
+
+### AI Video Tracking (Day 8–14)
+
+#### Codex Does
+- [ ] Add AI Video Projects table to Airtable base
+- [ ] Configure all fields per `ai-video-spec.md`
+- [ ] Create views: By Tool, Needs Review, Approved Assets, Prompt Library
+- [ ] Seed 2–3 example prompt templates
+- [ ] Document UI-first workflow for Matt
 
 ---
 
@@ -263,16 +342,32 @@ You can sell, fulfill, capture proof, and repeat without chaos. First case study
 
 ### Fallback C: Content Publish Prep (n8n down)
 
-1. Open Content Pipeline → change Status manually: Draft → Needs QA → Needs Approval → Scheduled → Published
+1. Open Content Pipeline → change Status manually: Draft → Needs QA → Needs Approval → Approved → Published
 2. Complete QA checklist checkboxes manually
-3. After publishing: paste Post URL into the record
-4. Set a calendar reminder: "Capture metrics for [Post Title] in 24 hours"
+3. Manually publish to each platform (copy-paste draft text)
+4. After publishing: paste Post URL into the record
+5. Set a calendar reminder: "Capture metrics for [Post Title] in 24 hours"
 
 ### Fallback D: Error Digest (n8n down)
 
 1. Open System Logs → "Errors Last 7 Days" view
 2. Review manually each morning
 3. Resolve or assign as needed
+
+### Fallback E: Social Engagement Capture (n8n down)
+
+1. Check each platform manually for new comments (daily)
+2. Open Airtable → Engagement Inbox → create record per comment
+3. Fill: Source, Type, Author Handle, Content, Status = "New"
+4. Log: System=Manual, Workflow="Engagement Capture"
+
+### Fallback F: Auto-Publish (n8n down)
+
+1. Content remains in "Approved" status in Airtable
+2. Copy draft text from Content Pipeline record
+3. Paste directly into each platform's native composer
+4. After publishing: paste Post URL back into Airtable, set Status = "Published"
+5. Log: System=Manual, Workflow="Auto-Publish"
 
 ---
 
@@ -293,14 +388,23 @@ Required from client:
 ☐ Brand voice samples (3-5 examples of content they like)
 ☐ Competitors (2-3 they respect or fear)
 
+Required agreements:
+☐ Case study permission level agreed (Full Public / Anonymized / Process Only)
+  - Founders promo requires Anonymized or Full Public
+☐ Scope agreement sent via Zoho Sign
+☐ Scope agreement signed by client
+
 Internal setup:
 ☐ Account record created in Airtable
 ☐ Sprint record created with dates
 ☐ Campaign Kit record linked
 ☐ Zoho Deal created and moved to "In Fulfillment"
-☐ Client Portal link generated and shared
+☐ Deposit invoice sent via Zoho Billing
+☐ Deposit confirmed paid
+☐ Client Portal (Softr) link generated and shared
+☐ AI Video Projects record created if video deliverables included
 
-Intake complete when: All required items received + Intake Complete = checked
+Intake complete when: All required items received + agreement signed + deposit paid + Intake Complete = checked
 ```
 
 ### SOP 2: Revision Policy
@@ -315,8 +419,18 @@ Rules:
 1. All feedback must be submitted in ONE message/document per round
 2. Partial feedback does not start a new round — wait until all feedback is collected
 3. Matt consolidates and implements in one pass
-4. If no feedback within 48 hours of delivery: considered approved
-5. Round 0 = initial delivery. Round 1 = first revision. Round 2 = final revision.
+4. Round 0 = initial delivery. Round 1 = first revision. Round 2 = final revision.
+
+Pause and Requeue Policy (48-Hour Feedback Window):
+- Sprint timelines assume client feedback within 48 hours of each review milestone
+- If no consolidated feedback within 48 hours: sprint is PAUSED (not auto-approved)
+- Matt sends courtesy notification: "I'm pausing your sprint to give you time.
+  When you're ready with consolidated feedback, I'll slot you into my next
+  available production window."
+- Consequence: Matt moves to other work. Client loses their active slot.
+  Resume depends on Matt's availability.
+- Paused sprints do not expire but are subject to scheduling availability.
+- This is included in the scope agreement signed via Zoho Sign.
 
 Out of scope (requires scope amendment):
 - Net new deliverables not in original scope

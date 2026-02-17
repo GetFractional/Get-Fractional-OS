@@ -517,3 +517,122 @@ Table: System Logs
   "Retry Count": 0
 }
 ```
+
+---
+
+## 8. Addendum: New Tables & Field Updates (v2)
+
+> Added per Matt's decisions on social automation, AI video, client portal, and metrics capture.
+
+### NEW Table 12: AI Video Projects
+
+> Tracks prompts, settings, and outputs from AI image/video generation tools. Doubles as a prompt library.
+
+| Field Name | Type | Notes |
+|---|---|---|
+| Project Name | Single line text | **Primary field** — `[Account] - [Tool] - [Desc] - [Date]` |
+| Tool | Single select | Options: `Nano Banana Pro`, `Kling 3.0`, `Veo 3.1`, `Other` |
+| Type | Single select | Options: `Image`, `Video` |
+| Account | Link to Accounts | |
+| Sprint | Link to Sprints | |
+| Campaign Kit | Link to Campaign Kits | |
+| Prompt | Long text | Exact prompt used |
+| Negative Prompt | Long text | If applicable |
+| Settings JSON | Long text | Tool-specific settings (see ai-video-spec.md) |
+| Reference Images | Attachment | Up to 14 |
+| Start Frame | Attachment | Kling 3.0 only |
+| End Frame | Attachment | Kling 3.0 only |
+| Output Files | Attachment | Generated images/videos |
+| Output URL | URL | Hosted location for auto-publish |
+| Resolution | Single select | Options: `720p`, `1080p`, `1K`, `2K`, `4K` |
+| Aspect Ratio | Single select | Options: `1:1`, `4:5`, `9:16`, `16:9`, `Custom` |
+| Duration | Single select | Options: `N/A`, `4s`, `5s`, `6s`, `8s`, `10s`, `15s` |
+| Variants Generated | Number | 1–4 |
+| Multi-Shot | Checkbox | Kling 3.0 only |
+| Audio | Checkbox | Kling 3.0 only |
+| Status | Single select | Options: `Queued`, `Generating`, `Review`, `Approved`, `Rejected`, `Used` |
+| Quality Rating | Single select | Options: `Poor`, `Acceptable`, `Good`, `Excellent` |
+| Notes | Long text | What worked/didn't — builds prompt library |
+| Created | Created time | Auto |
+
+### UPDATED: Content Pipeline — New Fields for Metrics + Auto-Publish
+
+| Field Name | Type | Notes |
+|---|---|---|
+| Platform Post ID | Single line text | Platform-specific post ID for API lookups |
+| Impressions | Number | Auto-captured via Workflow G |
+| Likes / Reactions | Number | Auto-captured |
+| Comments Count | Number | Auto-captured |
+| Shares / Reposts | Number | Auto-captured |
+| Link Clicks | Number | Manual entry |
+| Metrics Captured At | Date | When metrics were pulled |
+| Engagement Rate | Formula | `IF(Impressions > 0, (({Likes / Reactions} + {Comments Count} + {Shares / Reposts}) / Impressions) * 100, 0)` |
+| Image / Media | Attachment | For IG auto-publish (requires image) |
+| Scheduled Publish Time | Date/Time | When to auto-publish (if future-dated) |
+
+**Updated Status options:** `Idea`, `Draft`, `Needs QA`, `Needs Approval`, `Approved`, `Scheduled`, `Published`, `Rejected`
+
+> Note: "Approved" is new — it means Matt approved but auto-publish hasn't fired yet. "Scheduled" means it's queued for a future publish time.
+
+### UPDATED: Content Pipeline — Updated Status Flow
+
+```
+Idea → Draft → Needs QA → Needs Approval → Approved → Published
+                                              ↓
+                                          Scheduled (if future Publish Date)
+                                              ↓
+                                          Published (auto-publish fires)
+
+Rejected can occur from Needs Approval → back to Draft
+```
+
+### UPDATED: Sprints — New Fields for Client Portal
+
+| Field Name | Type | Notes |
+|---|---|---|
+| Client Feedback | Long text | Submitted via Softr portal |
+| Portal Timeline Notes | Long text | Human-readable timeline for portal display |
+| Client-Visible Notes | Long text | Notes visible to client (not Internal Notes) |
+| Sprint Paused | Checkbox | Set when client misses 48h feedback window |
+| Pause Reason | Long text | Why sprint was paused |
+| Original Due Date | Date | Preserved when sprint is paused/rescheduled |
+
+### UPDATED: Campaign Kits — New Fields for Client Portal
+
+| Field Name | Type | Notes |
+|---|---|---|
+| Client Downloadable | Checkbox | Show this asset in the Softr portal |
+| Download Link | URL | Direct link to downloadable file |
+| Client Status | Single select | Options: `Pending`, `Ready for Review`, `Final` |
+
+### UPDATED: Engagement Inbox — New Fields for Auto-Capture
+
+| Field Name | Type | Notes |
+|---|---|---|
+| Platform Post ID | Single line text | Platform-specific post ID |
+| Platform Comment ID | Single line text | Platform-specific comment ID |
+| Idempotency Key | Single line text | SHA256 hash for dedup |
+| CTA Keyword Detected | Single line text | If comment matches a CTA keyword |
+| Auto-Captured | Checkbox | true = captured by Workflow E, false = manual |
+
+### UPDATED: Leads — New View
+
+**Affiliate Referrals view:**
+- Filter: Notes CONTAINS "affiliate" OR Account Interest = "AI Video Bootcamp — Skool Affiliate"
+- Purpose: Track Skool affiliate referral pipeline
+
+### NEW Views for New Table
+
+**AI Video Projects:**
+| View Name | Type | Filter/Sort |
+|---|---|---|
+| All Projects | Grid | Default |
+| By Tool | Kanban | Grouped by Tool |
+| Needs Review | Grid | Status = "Review" |
+| Approved Assets | Gallery | Status IN ("Approved", "Used"), show Output Files |
+| Prompt Library | Grid | Status IN ("Approved", "Used"), sorted by Quality Rating desc |
+| By Account | Grid | Grouped by Account |
+
+### Updated Table Count
+
+**Total tables: 12** (was 11, added AI Video Projects)
