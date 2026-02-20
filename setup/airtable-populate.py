@@ -20,6 +20,7 @@
 # The script is idempotent: it skips tables, fields, and views that
 # already exist, so you can safely re-run after a partial failure.
 # =============================================================================
+from __future__ import annotations  # Python 3.7+ compat for type hints
 
 import os
 import sys
