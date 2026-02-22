@@ -724,40 +724,45 @@ class AirtableClient:
             return
 
         if r.status_code == 422 and "isReversed" in r.text:
-            # A link pair already exists between these tables (auto-created reverse).
-            # Find the auto-created reverse field and PATCH it instead.
+            # A link already exists between these tables (Airtable auto-created
+            # a reverse field). Find it and try to rename it to our preferred name.
             reverse = self._find_auto_reverse_field(tid, linked_tid)
             if reverse:
                 old_name = reverse["name"]
-                is_reversed = reverse.get("options", {}).get("isReversed", False)
-                field_url = f"/meta/bases/{self.base_id}/tables/{tid}/fields/{reverse['id']}"
+                fld_path = f"/meta/bases/{self.base_id}/tables/{tid}/fields/{reverse['id']}"
 
-                if single and not is_reversed:
-                    # Forward field — safe to set options
-                    patch_payload: dict = {"name": field_name, "options": {"prefersSingleRecordLink": True}}
-                    self.patch(field_url, patch_payload)
-                elif single and is_reversed:
-                    # Reversed field — Airtable won't accept options updates.
-                    # Try with options first; if 422, fall back to name-only.
+                # Build payloads to attempt, most-preferred first:
+                #   1. name + prefersSingleRecordLink  (if single)
+                #   2. name only                       (fallback)
+                attempts = []
+                if single:
+                    attempts.append({"name": field_name, "options": {"prefersSingleRecordLink": True}})
+                attempts.append({"name": field_name})
+
+                renamed = False
+                for i, payload in enumerate(attempts):
                     self._throttle()
-                    pr = self.session.patch(f"{API}{field_url}", json={"name": field_name, "options": {"prefersSingleRecordLink": True}})
-                    if pr.status_code == 422:
-                        warn(f"  Cannot set prefersSingleRecordLink on reversed field — renaming only")
-                        self.patch(field_url, {"name": field_name})
-                    elif pr.status_code >= 400:
-                        err(f"PATCH {field_url} → {pr.status_code}: {pr.text[:300]}")
-                        pr.raise_for_status()
-                else:
-                    self.patch(field_url, {"name": field_name})
+                    pr = self.session.patch(f"{API}{fld_path}", json=payload)
+                    if pr.status_code < 400:
+                        renamed = True
+                        break
+                    # If this wasn't the last attempt, log and try the next one
+                    if i < len(attempts) - 1:
+                        warn(f"  PATCH with options failed ({pr.status_code}) — retrying name-only")
+                        continue
 
-                # Update field tracking: remove old auto-name, add new name
-                self.table_fields.get(tid, set()).discard(old_name)
-                ok(f"Link: {src_table}.{field_name} → {tgt_table} (renamed reverse '{old_name}')" + (" (single)" if single else ""))
-                self.table_fields.setdefault(tid, set()).add(field_name)
+                if renamed:
+                    self.table_fields.get(tid, set()).discard(old_name)
+                    ok(f"Link: {src_table}.{field_name} → {tgt_table} (renamed '{old_name}')" + (" (single)" if single else ""))
+                    self.table_fields.setdefault(tid, set()).add(field_name)
+                else:
+                    # Link exists but rename failed — continue anyway
+                    warn(f"Link {src_table} → {tgt_table} exists as '{old_name}' (could not rename to '{field_name}')")
+                    self.table_fields.setdefault(tid, set()).add(old_name)
                 return
             else:
-                err(f"Could not find auto-created reverse field on {src_table} for {tgt_table}")
-                r.raise_for_status()
+                warn(f"Link {src_table} → {tgt_table}: reverse-link conflict but no reverse field found — skipping")
+                return
 
         if r.status_code == 422:
             text = r.text.lower()
