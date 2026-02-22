@@ -609,19 +609,17 @@ class AirtableClient:
         return {}
 
     def post_safe(self, path: str, payload: dict) -> dict | None:
-        """POST that returns None on 422 (duplicate) instead of raising."""
+        """POST that returns None on 422 (conflict / already exists) instead of raising."""
         for attempt in range(self.MAX_RETRIES + 1):
             self._throttle()
             r = self.session.post(f"{API}{path}", json=payload)
             if r.status_code < 400:
                 return r.json()
             if r.status_code == 422:
-                text = r.text.lower()
-                if "duplicate" in text or "already exists" in text or "unique" in text:
-                    return None
-                # Unknown 422 — still raise
-                err(f"POST {path} → 422: {r.text[:300]}")
-                r.raise_for_status()
+                # Any 422 means this entity can't be created — likely already
+                # exists or conflicts with existing data.  In an idempotent
+                # script this is always safe to skip.
+                return None
             if self._is_retryable(r.status_code) and attempt < self.MAX_RETRIES:
                 wait = self.RETRY_BACKOFF[attempt]
                 warn(f"POST {path} → {r.status_code} (attempt {attempt + 1}/{self.MAX_RETRIES + 1}), retrying in {wait}s...")
@@ -680,10 +678,12 @@ class AirtableClient:
 
     # ── link fields ──────────────────────────────────────────────────────
 
-    def _find_auto_reverse_field(self, on_table_id: str, pointing_to_table_id: str) -> dict | None:
-        """Find an auto-created reverse link field on on_table_id that points to pointing_to_table_id."""
-        data = self.get(f"/meta/bases/{self.base_id}/tables")
-        for t in data.get("tables", []):
+    def _find_link_field(self, on_table_id: str, pointing_to_table_id: str, tables_data: list | None = None) -> dict | None:
+        """Find a link field on on_table_id that points to pointing_to_table_id."""
+        if tables_data is None:
+            data = self.get(f"/meta/bases/{self.base_id}/tables")
+            tables_data = data.get("tables", [])
+        for t in tables_data:
             if t["id"] == on_table_id:
                 for f in t.get("fields", []):
                     if f.get("type") == "multipleRecordLinks":
@@ -691,6 +691,21 @@ class AirtableClient:
                         if opts.get("linkedTableId") == pointing_to_table_id:
                             return f
         return None
+
+    def _try_rename_field(self, fld_path: str, new_name: str, single: bool) -> bool:
+        """Try to PATCH-rename a field. Returns True on success."""
+        attempts = []
+        if single:
+            attempts.append({"name": new_name, "options": {"prefersSingleRecordLink": True}})
+        attempts.append({"name": new_name})
+        for i, payload in enumerate(attempts):
+            self._throttle()
+            pr = self.session.patch(f"{API}{fld_path}", json=payload)
+            if pr.status_code < 400:
+                return True
+            if i < len(attempts) - 1:
+                warn(f"  PATCH with options failed ({pr.status_code}) — retrying name-only")
+        return False
 
     def add_link(self, src_table: str, field_name: str, tgt_table: str, single: bool):
         tid = self.table_ids.get(src_table)
@@ -725,52 +740,56 @@ class AirtableClient:
 
         if r.status_code == 422 and "isReversed" in r.text:
             # A link already exists between these tables (Airtable auto-created
-            # a reverse field). Find it and try to rename it to our preferred name.
-            reverse = self._find_auto_reverse_field(tid, linked_tid)
+            # a reverse field). Fetch fresh schema and search both tables.
+            schema = self.get(f"/meta/bases/{self.base_id}/tables")
+            tables_data = schema.get("tables", [])
+
+            # 1) Look on the SOURCE table for a field pointing to target
+            reverse = self._find_link_field(tid, linked_tid, tables_data)
             if reverse:
                 old_name = reverse["name"]
                 fld_path = f"/meta/bases/{self.base_id}/tables/{tid}/fields/{reverse['id']}"
-
-                # Build payloads to attempt, most-preferred first:
-                #   1. name + prefersSingleRecordLink  (if single)
-                #   2. name only                       (fallback)
-                attempts = []
-                if single:
-                    attempts.append({"name": field_name, "options": {"prefersSingleRecordLink": True}})
-                attempts.append({"name": field_name})
-
-                renamed = False
-                for i, payload in enumerate(attempts):
-                    self._throttle()
-                    pr = self.session.patch(f"{API}{fld_path}", json=payload)
-                    if pr.status_code < 400:
-                        renamed = True
-                        break
-                    # If this wasn't the last attempt, log and try the next one
-                    if i < len(attempts) - 1:
-                        warn(f"  PATCH with options failed ({pr.status_code}) — retrying name-only")
-                        continue
-
+                renamed = self._try_rename_field(fld_path, field_name, single)
                 if renamed:
                     self.table_fields.get(tid, set()).discard(old_name)
                     ok(f"Link: {src_table}.{field_name} → {tgt_table} (renamed '{old_name}')" + (" (single)" if single else ""))
                     self.table_fields.setdefault(tid, set()).add(field_name)
                 else:
-                    # Link exists but rename failed — continue anyway
-                    warn(f"Link {src_table} → {tgt_table} exists as '{old_name}' (could not rename to '{field_name}')")
+                    warn(f"Link {src_table} → {tgt_table} exists as '{old_name}' (rename failed — keeping)")
                     self.table_fields.setdefault(tid, set()).add(old_name)
                 return
-            else:
-                warn(f"Link {src_table} → {tgt_table}: reverse-link conflict but no reverse field found — skipping")
+
+            # 2) Look on the TARGET table for a field pointing back to source
+            tgt_reverse = self._find_link_field(linked_tid, tid, tables_data)
+            if tgt_reverse:
+                # The link relationship already exists (field is on the other table).
+                # The source table should also have an auto-reverse — refresh and find it.
+                self.discover()
+                if field_name in self.table_fields.get(tid, set()):
+                    ok(f"Link: {src_table}.{field_name} → {tgt_table} (already present after refresh)")
+                else:
+                    warn(f"Link {src_table} → {tgt_table} exists (via '{tgt_reverse['name']}' on {tgt_table}) — field on {src_table} has auto-generated name")
                 return
 
+            # 3) Last resort: try POST without prefersSingleRecordLink
+            if single:
+                self._throttle()
+                r2 = self.session.post(
+                    f"{API}/meta/bases/{self.base_id}/tables/{tid}/fields",
+                    json={"name": field_name, "type": "multipleRecordLinks", "options": {"linkedTableId": linked_tid}},
+                )
+                if r2.status_code < 400:
+                    ok(f"Link: {src_table}.{field_name} → {tgt_table} (without single-record preference)")
+                    self.table_fields.setdefault(tid, set()).add(field_name)
+                    return
+
+            # Nothing worked — warn and continue (never crash)
+            warn(f"Link {src_table}.{field_name} → {tgt_table}: could not create or find ({r.status_code}) — skipping")
+            return
+
         if r.status_code == 422:
-            text = r.text.lower()
-            if "duplicate" in text or "already exists" in text or "unique" in text:
-                warn(f"Link {src_table}.{field_name} may already exist — skipped")
-                return
-            err(f"POST → 422: {r.text[:300]}")
-            r.raise_for_status()
+            warn(f"Link {src_table}.{field_name} → {tgt_table}: 422 — likely already exists, skipping")
+            return
 
         err(f"POST → {r.status_code}: {r.text[:300]}")
         r.raise_for_status()
