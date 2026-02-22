@@ -631,6 +631,21 @@ class AirtableClient:
             r.raise_for_status()
         return {}
 
+    def patch(self, path: str, payload: dict) -> dict:
+        for attempt in range(self.MAX_RETRIES + 1):
+            self._throttle()
+            r = self.session.patch(f"{API}{path}", json=payload)
+            if r.status_code < 400:
+                return r.json()
+            if self._is_retryable(r.status_code) and attempt < self.MAX_RETRIES:
+                wait = self.RETRY_BACKOFF[attempt]
+                warn(f"PATCH {path} → {r.status_code} (attempt {attempt + 1}/{self.MAX_RETRIES + 1}), retrying in {wait}s...")
+                time.sleep(wait)
+                continue
+            err(f"PATCH {path} → {r.status_code}: {r.text[:300]}")
+            r.raise_for_status()
+        return {}
+
     # ── discovery ────────────────────────────────────────────────────────
 
     def discover(self):
@@ -665,6 +680,18 @@ class AirtableClient:
 
     # ── link fields ──────────────────────────────────────────────────────
 
+    def _find_auto_reverse_field(self, on_table_id: str, pointing_to_table_id: str) -> dict | None:
+        """Find an auto-created reverse link field on on_table_id that points to pointing_to_table_id."""
+        data = self.get(f"/meta/bases/{self.base_id}/tables")
+        for t in data.get("tables", []):
+            if t["id"] == on_table_id:
+                for f in t.get("fields", []):
+                    if f.get("type") == "multipleRecordLinks":
+                        opts = f.get("options", {})
+                        if opts.get("linkedTableId") == pointing_to_table_id:
+                            return f
+        return None
+
     def add_link(self, src_table: str, field_name: str, tgt_table: str, single: bool):
         tid = self.table_ids.get(src_table)
         linked_tid = self.table_ids.get(tgt_table)
@@ -684,15 +711,50 @@ class AirtableClient:
         if single:
             options["prefersSingleRecordLink"] = True
 
-        result = self.post_safe(
-            f"/meta/bases/{self.base_id}/tables/{tid}/fields",
-            {"name": field_name, "type": "multipleRecordLinks", "options": options},
+        # Try creating the link field
+        self._throttle()
+        r = self.session.post(
+            f"{API}/meta/bases/{self.base_id}/tables/{tid}/fields",
+            json={"name": field_name, "type": "multipleRecordLinks", "options": options},
         )
-        if result:
+
+        if r.status_code < 400:
             ok(f"Link: {src_table}.{field_name} → {tgt_table}" + (" (single)" if single else ""))
             self.table_fields.setdefault(tid, set()).add(field_name)
-        else:
-            warn(f"Link {src_table}.{field_name} may already exist — skipped")
+            return
+
+        if r.status_code == 422 and "isReversed" in r.text:
+            # A link pair already exists between these tables (auto-created reverse).
+            # Find the auto-created reverse field and PATCH it instead.
+            reverse = self._find_auto_reverse_field(tid, linked_tid)
+            if reverse:
+                old_name = reverse["name"]
+                patch_payload: dict = {"name": field_name}
+                if single:
+                    patch_payload["options"] = {"prefersSingleRecordLink": True}
+                self.patch(
+                    f"/meta/bases/{self.base_id}/tables/{tid}/fields/{reverse['id']}",
+                    patch_payload,
+                )
+                # Update field tracking: remove old auto-name, add new name
+                self.table_fields.get(tid, set()).discard(old_name)
+                ok(f"Link: {src_table}.{field_name} → {tgt_table} (renamed reverse '{old_name}')" + (" (single)" if single else ""))
+                self.table_fields.setdefault(tid, set()).add(field_name)
+                return
+            else:
+                err(f"Could not find auto-created reverse field on {src_table} for {tgt_table}")
+                r.raise_for_status()
+
+        if r.status_code == 422:
+            text = r.text.lower()
+            if "duplicate" in text or "already exists" in text or "unique" in text:
+                warn(f"Link {src_table}.{field_name} may already exist — skipped")
+                return
+            err(f"POST → 422: {r.text[:300]}")
+            r.raise_for_status()
+
+        err(f"POST → {r.status_code}: {r.text[:300]}")
+        r.raise_for_status()
 
     # ── views ────────────────────────────────────────────────────────────
 
