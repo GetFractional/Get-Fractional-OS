@@ -729,13 +729,27 @@ class AirtableClient:
             reverse = self._find_auto_reverse_field(tid, linked_tid)
             if reverse:
                 old_name = reverse["name"]
-                patch_payload: dict = {"name": field_name}
-                if single:
-                    patch_payload["options"] = {"prefersSingleRecordLink": True}
-                self.patch(
-                    f"/meta/bases/{self.base_id}/tables/{tid}/fields/{reverse['id']}",
-                    patch_payload,
-                )
+                is_reversed = reverse.get("options", {}).get("isReversed", False)
+                field_url = f"/meta/bases/{self.base_id}/tables/{tid}/fields/{reverse['id']}"
+
+                if single and not is_reversed:
+                    # Forward field — safe to set options
+                    patch_payload: dict = {"name": field_name, "options": {"prefersSingleRecordLink": True}}
+                    self.patch(field_url, patch_payload)
+                elif single and is_reversed:
+                    # Reversed field — Airtable won't accept options updates.
+                    # Try with options first; if 422, fall back to name-only.
+                    self._throttle()
+                    pr = self.session.patch(f"{API}{field_url}", json={"name": field_name, "options": {"prefersSingleRecordLink": True}})
+                    if pr.status_code == 422:
+                        warn(f"  Cannot set prefersSingleRecordLink on reversed field — renaming only")
+                        self.patch(field_url, {"name": field_name})
+                    elif pr.status_code >= 400:
+                        err(f"PATCH {field_url} → {pr.status_code}: {pr.text[:300]}")
+                        pr.raise_for_status()
+                else:
+                    self.patch(field_url, {"name": field_name})
+
                 # Update field tracking: remove old auto-name, add new name
                 self.table_fields.get(tid, set()).discard(old_name)
                 ok(f"Link: {src_table}.{field_name} → {tgt_table} (renamed reverse '{old_name}')" + (" (single)" if single else ""))
