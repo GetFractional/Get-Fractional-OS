@@ -568,40 +568,68 @@ class AirtableClient:
 
     # ── low-level ────────────────────────────────────────────────────────
 
+    MAX_RETRIES = 4
+    RETRY_BACKOFF = [2, 4, 8, 16]  # seconds between retries
+
     def _throttle(self):
         time.sleep(RATE_LIMIT_SEC)
 
+    def _is_retryable(self, status_code: int) -> bool:
+        """Returns True for status codes worth retrying (server errors + rate limits)."""
+        return status_code in (429, 500, 502, 503)
+
     def get(self, path: str) -> dict:
-        self._throttle()
-        r = self.session.get(f"{API}{path}")
-        if r.status_code >= 400:
+        for attempt in range(self.MAX_RETRIES + 1):
+            self._throttle()
+            r = self.session.get(f"{API}{path}")
+            if r.status_code < 400:
+                return r.json()
+            if self._is_retryable(r.status_code) and attempt < self.MAX_RETRIES:
+                wait = self.RETRY_BACKOFF[attempt]
+                warn(f"GET {path} → {r.status_code} (attempt {attempt + 1}/{self.MAX_RETRIES + 1}), retrying in {wait}s...")
+                time.sleep(wait)
+                continue
             err(f"GET {path} → {r.status_code}: {r.text[:300]}")
             r.raise_for_status()
-        return r.json()
+        return {}  # unreachable, but keeps type checkers happy
 
     def post(self, path: str, payload: dict) -> dict:
-        self._throttle()
-        r = self.session.post(f"{API}{path}", json=payload)
-        if r.status_code >= 400:
+        for attempt in range(self.MAX_RETRIES + 1):
+            self._throttle()
+            r = self.session.post(f"{API}{path}", json=payload)
+            if r.status_code < 400:
+                return r.json()
+            if self._is_retryable(r.status_code) and attempt < self.MAX_RETRIES:
+                wait = self.RETRY_BACKOFF[attempt]
+                warn(f"POST {path} → {r.status_code} (attempt {attempt + 1}/{self.MAX_RETRIES + 1}), retrying in {wait}s...")
+                time.sleep(wait)
+                continue
             err(f"POST {path} → {r.status_code}: {r.text[:300]}")
             r.raise_for_status()
-        return r.json()
+        return {}
 
     def post_safe(self, path: str, payload: dict) -> dict | None:
         """POST that returns None on 422 (duplicate) instead of raising."""
-        self._throttle()
-        r = self.session.post(f"{API}{path}", json=payload)
-        if r.status_code == 422:
-            text = r.text.lower()
-            if "duplicate" in text or "already exists" in text or "unique" in text:
-                return None
-            # Unknown 422 — still raise
-            err(f"POST {path} → 422: {r.text[:300]}")
-            r.raise_for_status()
-        if r.status_code >= 400:
+        for attempt in range(self.MAX_RETRIES + 1):
+            self._throttle()
+            r = self.session.post(f"{API}{path}", json=payload)
+            if r.status_code < 400:
+                return r.json()
+            if r.status_code == 422:
+                text = r.text.lower()
+                if "duplicate" in text or "already exists" in text or "unique" in text:
+                    return None
+                # Unknown 422 — still raise
+                err(f"POST {path} → 422: {r.text[:300]}")
+                r.raise_for_status()
+            if self._is_retryable(r.status_code) and attempt < self.MAX_RETRIES:
+                wait = self.RETRY_BACKOFF[attempt]
+                warn(f"POST {path} → {r.status_code} (attempt {attempt + 1}/{self.MAX_RETRIES + 1}), retrying in {wait}s...")
+                time.sleep(wait)
+                continue
             err(f"POST {path} → {r.status_code}: {r.text[:300]}")
             r.raise_for_status()
-        return r.json()
+        return {}
 
     # ── discovery ────────────────────────────────────────────────────────
 
