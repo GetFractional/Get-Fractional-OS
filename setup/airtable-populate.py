@@ -189,7 +189,7 @@ TABLES = [
                 {"name": "Process Only", "color": "grayLight2"},
             ]}},
             {"name": "Pause Reason", "type": "multilineText"},
-            {"name": "Client Satisfaction", "type": "rating", "options": {"max": 5, "color": "yellowBright"}},
+            {"name": "Client Satisfaction", "type": "rating", "options": {"max": 5, "color": "yellowBright", "icon": "star"}},
             {"name": "Notes", "type": "multilineText"},
         ],
     },
