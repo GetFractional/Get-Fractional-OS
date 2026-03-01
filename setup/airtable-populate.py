@@ -817,7 +817,7 @@ class AirtableClient:
         if not tid:
             err(f"Table '{table_name}' not found — cannot seed record")
             return
-        self.post(f"/v0/{self.base_id}/{tid}", {"fields": fields})
+        self.post(f"/{self.base_id}/{tid}", {"fields": fields})
 
 
 # =============================================================================
